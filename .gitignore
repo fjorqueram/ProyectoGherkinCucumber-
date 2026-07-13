@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Behave / reports
+reports/
+*.json
+
+# Output artifacts
+output/features/*
+output/summaries/*
+output/xray_payloads/*
+output/traceability/*
+!output/features/.gitkeep
+!output/summaries/.gitkeep
+!output/xray_payloads/.gitkeep
+!output/traceability/.gitkeep

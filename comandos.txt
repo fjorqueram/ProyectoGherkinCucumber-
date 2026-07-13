@@ -1,0 +1,25 @@
+# Crear carpetas
+New-Item -ItemType Directory -Force src\ai_qa_gherkin\clients,src\ai_qa_gherkin\services,src\ai_qa_gherkin\prompts,src\ai_qa_gherkin\utils | Out-Null
+New-Item -ItemType Directory -Force templates,output\summaries,output\features,output\xray_payloads,output\traceability,tests\fixtures,features\steps | Out-Null
+
+# Crear archivos raíz
+New-Item -ItemType File -Force README.md,.env.example,.gitignore,requirements.txt,pyproject.toml,Makefile,AGENTS.md | Out-Null
+
+# Package principal
+New-Item -ItemType File -Force src\ai_qa_gherkin\__init__.py,src\ai_qa_gherkin\config.py,src\ai_qa_gherkin\logger.py,src\ai_qa_gherkin\models.py,src\ai_qa_gherkin\orchestrator.py,src\ai_qa_gherkin\cli.py | Out-Null
+
+# Clients
+New-Item -ItemType File -Force src\ai_qa_gherkin\clients\__init__.py,src\ai_qa_gherkin\clients\jira_client.py,src\ai_qa_gherkin\clients\confluence_client.py,src\ai_qa_gherkin\clients\git_client.py,src\ai_qa_gherkin\clients\xray_client.py,src\ai_qa_gherkin\clients\llm_client.py | Out-Null
+
+# Services
+New-Item -ItemType File -Force src\ai_qa_gherkin\services\__init__.py,src\ai_qa_gherkin\services\collector_service.py,src\ai_qa_gherkin\services\analysis_service.py,src\ai_qa_gherkin\services\gherkin_service.py,src\ai_qa_gherkin\services\validator_service.py,src\ai_qa_gherkin\services\summary_service.py,src\ai_qa_gherkin\services\publish_service.py,src\ai_qa_gherkin\services\execution_service.py | Out-Null
+
+# Prompts / templates / utils / tests
+New-Item -ItemType File -Force src\ai_qa_gherkin\prompts\system_prompt.txt,src\ai_qa_gherkin\prompts\gherkin_prompt.txt,templates\feature.template.j2,src\ai_qa_gherkin\utils\__init__.py,src\ai_qa_gherkin\utils\text_utils.py,src\ai_qa_gherkin\utils\traceability.py,tests\test_analysis_service.py,tests\test_gherkin_service.py,tests\test_validator_service.py | Out-Null
+
+# .gitkeep
+New-Item -ItemType File -Force output\features\.gitkeep,output\summaries\.gitkeep,output\xray_payloads\.gitkeep,output\traceability\.gitkeep | Out-Null
+
+
+----------------Instalar Dependencias
+pip install pydantic pydantic-settings python-dotenv loguru tenacity httpx
