@@ -7,7 +7,7 @@ import httpx
 
 from ai_qa_gherkin.config import settings
 from ai_qa_gherkin.logger import get_logger
-from ai_qa_gherkin.models import XrayImportResponse
+from ai_qa_gherkin.models.domain import XrayImportResponse
 from ai_qa_gherkin.retry import PermanentError, TransientError, retry_policy
 
 log = get_logger("xray_client")

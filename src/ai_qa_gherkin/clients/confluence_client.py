@@ -2,7 +2,7 @@ from __future__ import annotations
 import httpx
 from ai_qa_gherkin.config import settings
 from ai_qa_gherkin.logger import get_logger
-from ai_qa_gherkin.models import ConfluencePage
+from ai_qa_gherkin.models.domain import ConfluencePage
 from ai_qa_gherkin.retry import retry_policy, TransientError, PermanentError
 
 log = get_logger("confluence_client")

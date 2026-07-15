@@ -3,7 +3,7 @@ from typing import Any
 import httpx
 from ai_qa_gherkin.config import settings
 from ai_qa_gherkin.logger import get_logger
-from ai_qa_gherkin.models import JiraIssue
+from ai_qa_gherkin.models.domain import JiraIssue
 from ai_qa_gherkin.retry import retry_policy, TransientError, PermanentError
 
 log = get_logger("jira_client")
