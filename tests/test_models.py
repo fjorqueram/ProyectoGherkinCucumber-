@@ -169,19 +169,23 @@ class TestGeneratedFeature:
 class TestValidationResult:
     def test_valid_feature(self):
         result = ValidationResult(
-            valid=True,
+            is_valid=True,
             syntax_ok=True,
             lint_ok=True,
+            errors=[],
+            warnings=[],
+            confidence=0.9,
         )
-        assert result.valid is True
+        assert result.is_valid is True
 
     def test_invalid_with_errors(self):
         result = ValidationResult(
-            valid=False,
+            is_valid=False,
             syntax_ok=False,
-            errors=["Invalid Gherkin syntax at line 3"],
+            errors=[{"message": "Invalid Gherkin syntax at line 3"}],
+            confidence=0.8,
         )
-        assert result.valid is False
+        assert result.is_valid is False
         assert len(result.errors) == 1
 
 

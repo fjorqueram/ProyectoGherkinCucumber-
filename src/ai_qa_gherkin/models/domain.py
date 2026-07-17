@@ -80,11 +80,13 @@ class GeneratedFeature(BaseModel):
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
 class ValidationResult(BaseModel):
-    valid: bool
+    is_valid: bool
     syntax_ok: bool = True
     lint_ok: bool = True
-    errors: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    confidence: float
+    raw: dict[str, Any] | None = None
 
 
 class PublishResult(BaseModel):

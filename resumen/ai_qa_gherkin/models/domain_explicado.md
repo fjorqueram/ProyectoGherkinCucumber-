@@ -906,3 +906,110 @@ Los modelos nuevos representan el flujo interno:
 - `ExecutionResult`
 
 La clave tecnica del archivo es Pydantic: cada clase hereda de `BaseModel`, lo que entrega validacion, serializacion y estructura consistente para el resto del proyecto.
+
+---
+
+## 19) Actualizacion 2026-07-17: cambios en `ValidationResult`
+
+La version actual de `domain.py` cambio el modelo `ValidationResult`.
+
+Antes el campo principal era:
+
+```python
+valid: bool
+```
+
+Ahora el campo principal es:
+
+```python
+is_valid: bool
+```
+
+Esto alinea el modelo con `validator_service.py`, que retorna:
+
+```python
+ValidationResult(
+    is_valid=is_valid,
+    errors=[...],
+    warnings=[...],
+    confidence=confidence,
+    raw={...},
+)
+```
+
+### Modelo actual
+
+```python
+class ValidationResult(BaseModel):
+    is_valid: bool
+    syntax_ok: bool = True
+    lint_ok: bool = True
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    confidence: float
+    raw: dict[str, Any] | None = None
+```
+
+### Campos actuales
+
+- `is_valid`: indica si la validacion pasa o no.
+- `syntax_ok`: indica estado de sintaxis, por defecto `True`.
+- `lint_ok`: indica estado de lint/calidad, por defecto `True`.
+- `errors`: lista de errores como diccionarios.
+- `warnings`: lista de advertencias como diccionarios.
+- `confidence`: confianza de la validacion. Es obligatorio.
+- `raw`: detalle adicional o metricas internas. Puede ser `None`.
+
+### Diferencia importante
+
+`errors` y `warnings` ahora son:
+
+```python
+list[dict[str, Any]]
+```
+
+No `list[str]`.
+
+Esto permite guardar errores estructurados con:
+
+- `rule_id`
+- `severity`
+- `line`
+- `message`
+- `suggestion`
+
+### Punto de cuidado
+
+`errors` y `warnings` usan listas como default directo:
+
+```python
+errors: list[dict[str, Any]] = []
+warnings: list[dict[str, Any]] = []
+```
+
+En Pydantic normalmente funciona mejor que en dataclasses simples, pero por consistencia con el resto del archivo seria mas claro usar:
+
+```python
+Field(default_factory=list)
+```
+
+### Impacto en tests
+
+`tests/test_models.py` ya valida el nuevo formato usando:
+
+```python
+ValidationResult(
+    is_valid=True,
+    syntax_ok=True,
+    lint_ok=True,
+    errors=[],
+    warnings=[],
+    confidence=0.9,
+)
+```
+
+Y tambien valida errores estructurados:
+
+```python
+errors=[{"message": "Invalid Gherkin syntax at line 3"}]
+```
