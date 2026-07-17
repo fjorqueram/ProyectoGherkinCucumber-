@@ -1,0 +1,25 @@
+VERSION: 1.0
+DATE: 2026-07-16
+DESCRIPTION: Generación de escenarios Gherkin desde análisis BDD
+
+=== OBJETIVO ===
+Generar escenarios Gherkin en español que cubran:
+1. Flujo exitoso (happy path)
+2. Validaciones de entrada
+3. Manejo de errores
+4. Casos límite
+
+=== FORMATO OBLIGATORIO ===
+Lenguaje: Español
+Estructura: Given-When-Then
+Tags: @smoke, @regression, @validation, @error-handling
+
+=== REGLAS DE CALIDAD ===
+- Máximo 10 pasos por escenario
+- Nombres descriptivos en lenguaje de negocio
+- Sin detalles técnicos o implementación
+- Cada "Then" debe ser observable/testeable
+- Incluir al menos 1 happy path + 2 errores
+
+=== SALIDA ===
+Solo texto Gherkin válido, sin explicaciones adicionales

@@ -1,0 +1,41 @@
+{% if language == 'es' %}
+# language: es
+{% else %}
+# language: en
+{% endif %}
+
+{% for tag in tags %}
+@{{ tag }}
+{% endfor %}
+Característica: {{ feature_name }}
+  {{ description }}
+
+{% if background %}
+  Antecedentes:
+  {% for step in background.given %}
+    Dado {{ step }}
+  {% endfor %}
+  {% for step in background.when %}
+    Cuando {{ step }}
+  {% endfor %}
+  {% for step in background.then %}
+    Entonces {{ step }}
+  {% endfor %}
+
+{% endif %}
+{% for scenario in scenarios %}
+  {% for tag in scenario.tags %}
+  @{{ tag }}
+  {% endfor %}
+  Escenario: {{ scenario.name }}
+  {% for step in scenario.given %}
+    {% if loop.first %}Dado{% else %}Y{% endif %} {{ step }}
+  {% endfor %}
+  {% for step in scenario.when %}
+    {% if loop.first %}Cuando{% else %}Y{% endif %} {{ step }}
+  {% endfor %}
+  {% for step in scenario.then %}
+    {% if loop.first %}Entonces{% else %}Y{% endif %} {{ step }}
+  {% endfor %}
+
+{% endfor %}

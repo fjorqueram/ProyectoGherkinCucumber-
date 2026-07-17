@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     jira_timeout_seconds: int = Field(default=20, alias="JIRA_TIMEOUT_SECONDS")
 
     # Confluence
-    confluence_base_url: str = Field("", alias="CONFLUENCE_BASE_URL")
-    confluence_email: str = Field("", alias="CONFLUENCE_EMAIL")
-    confluence_api_token: str = Field("", alias="CONFLUENCE_API_TOKEN")
+    confluence_base_url: str = Field("CONFLUENCE_BASE_URL", alias="CONFLUENCE_BASE_URL")
+    confluence_email: str = Field("CONFLUENCE_EMAIL", alias="CONFLUENCE_EMAIL")
+    confluence_api_token: str = Field("CONFLUENCE_API_TOKEN", alias="CONFLUENCE_API_TOKEN")
     confluence_timeout_seconds: int = Field(default=20, alias="CONFLUENCE_TIMEOUT_SECONDS")
 
     # Git Provider (GitHub/GitLab)
