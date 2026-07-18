@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 
+
 class JiraIssue(BaseModel):
     key: str
     summary: str
@@ -11,16 +12,19 @@ class JiraIssue(BaseModel):
     links: list[str] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
 
+
 class ConfluencePage(BaseModel):
     id: str
     title: str
     url: str
     content: str = ""
 
+
 class GitCommit(BaseModel):
     sha: str
     message: str
     url: str
+
 
 class PullRequest(BaseModel):
     id: str
@@ -28,11 +32,13 @@ class PullRequest(BaseModel):
     url: str
     state: str
 
+
 class XrayImportResponse(BaseModel):
     success: bool
     payload: dict[str, Any] = Field(default_factory=dict)
 
-# ===== Nuevos modelos solicitados =====
+
+# ===== Contextos de recolección =====
 
 class IssueContext(BaseModel):
     issue_key: str
@@ -60,15 +66,57 @@ class GitContext(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
+# ===== Modelos para Análisis =====
+
+class TraceabilityLink(BaseModel):
+    """Link a la fuente original de una regla/criterio."""
+    source_type: Literal["jira", "confluence", "git", "llm"] = "jira"
+    source_id: str
+    source_name: str = ""
+    url: str = ""
+
+
+class BusinessRule(BaseModel):
+    """Regla de negocio extraída."""
+    rule: str
+    category: Literal["general", "validation", "permission", "performance"] = "general"
+    traceability: TraceabilityLink
+    priority: int = 1
+
+
+class Precondition(BaseModel):
+    """Precondición para ejecutar un escenario."""
+    precondition: str
+    traceability: TraceabilityLink
+
+
+class HappyPath(BaseModel):
+    """Camino feliz (flujo principal)."""
+    name: str
+    steps: list[str] = Field(default_factory=list)
+    traceability: TraceabilityLink
+
+
+class ErrorScenario(BaseModel):
+    """Escenario de error potencial."""
+    error_type: str
+    description: str
+    expected_outcome: str
+    traceability: TraceabilityLink
+
+
 class AnalysisResult(BaseModel):
+    """Resultado completo del análisis."""
     issue_key: str
-    scope_summary: str
+    scope_summary: str = ""
     business_rules: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.7, ge=0.0, le=1.0)
     raw: dict[str, Any] = Field(default_factory=dict)
 
+
+# ===== Generación y Validación =====
 
 class GeneratedFeature(BaseModel):
     feature_name: str
@@ -79,12 +127,13 @@ class GeneratedFeature(BaseModel):
     source_issue_key: str = ""
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
+
 class ValidationResult(BaseModel):
     is_valid: bool
     syntax_ok: bool = True
     lint_ok: bool = True
-    errors: list[dict[str, Any]] = []
-    warnings: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
     confidence: float
     raw: dict[str, Any] | None = None
 
@@ -110,4 +159,3 @@ class ExecutionResult(BaseModel):
     execution_key: str = ""
     test_keys: list[str] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
-    

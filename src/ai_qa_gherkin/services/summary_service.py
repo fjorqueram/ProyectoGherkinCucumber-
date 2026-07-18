@@ -159,33 +159,115 @@ class SummaryService:
         self.output_summary = output_summary
         self.output_traceability = output_traceability
         
-    def generate_executive_summary(self, issue_key: str, analysis_result: dict[str, Any], validation_result: dict[str, Any], gherkin_path: str) -> ExecutiveSummary:
-        """Genera resumen ejecutivo."""
+    def generate_executive_summary(
+        self,
+        issue_key: str,
+        analysis_result: dict[str, Any] | Any,  # Aceptar dict O AnalysisResult
+        validation_result: dict[str, Any] | None = None,
+        gherkin_path: str | None = None,
+    ) -> ExecutiveSummary:
+        """
+        Genera resumen ejecutivo desde análisis.
+        Soporta AnalysisResult (orchestrator) o dict (tests).
+        """
         log.info(f"Generating executive summary for {issue_key}")
+
+        # Modo 1: AnalysisResult model (desde orchestrator)
+        # Type guard explícito
+        if not isinstance(analysis_result, dict) and hasattr(analysis_result, 'business_rules'):
+            # En este punto, Pylance sabe que tiene los atributos
+            business_rules = getattr(analysis_result, 'business_rules', [])
+            assumptions = getattr(analysis_result, 'assumptions', [])
+            risks = getattr(analysis_result, 'risks', [])
+            confidence = getattr(analysis_result, 'confidence', 0)
+            
+            description = (
+                f"**Negocio:**\n"
+                f"- {len(business_rules)} reglas de negocio identificadas\n"
+                f"- {len(assumptions)} supuestos\n"
+                f"- {len(risks)} riesgos identificados\n\n"
+                f"**Calidad:**\n"
+                f"- Confianza: {confidence:.0%}\n"
+            )
+
+            return ExecutiveSummary(
+                issue_key=issue_key,
+                summary=f"Análisis de {issue_key}",
+                description=description,
+            )
         
-        issue = analysis_result.get("issue", {})
-        summary_text = issue.get("summary", "")
+        # Modo 2: dict (desde tests)
+        if isinstance(analysis_result, dict) and validation_result is not None:
+            issue = analysis_result.get("issue", {})
+            summary_text = issue.get("summary", "")
+            business_rules = analysis_result.get("business_rules", [])
+            scenarios_count = len(validation_result.get("raw", {}).get("detailed_errors", []))
 
-        # Construir descripción con métricas
-        business_rules = analysis_result.get("business_rules", [])
-        scenarios_count = len(validation_result.get("raw", {}).get("detailed_errors", []))
+            description = (
+                f"**Negocio:**\n"
+                f"- {len(business_rules)} reglas de negocio identificadas\n\n"
+                f"**Validación:**\n"
+                f"- Escenarios: {scenarios_count}\n"
+                f"- Estado: {'✅ Válido' if validation_result.get('is_valid') else '❌ Inválido'}\n"
+                f"- Confianza: {validation_result.get('confidence', 0):.0%}\n\n"
+                f"**Archivo:**\n"
+                f"- {gherkin_path or 'N/A'}"
+            )
 
-        description = (
-            f"**Negocio:**\n"
-            f"- {len(business_rules)} reglas de negocio identificadas\n\n"
-            f"**Validación:**\n"
-            f"- Escenarios: {scenarios_count}\n"
-            f"- Estado: {'✅ Válido' if validation_result.get('is_valid') else '❌ Inválido'}\n"
-            f"- Confianza: {validation_result.get('confidence', 0):.0%}\n\n"
-            f"**Archivo:**\n"
-            f"- {gherkin_path}"
-        )
-
+            return ExecutiveSummary(
+                issue_key=issue_key,
+                summary=summary_text,
+                description=description,
+            )
+        
+        # Fallback
         return ExecutiveSummary(
-            issue_key=issue_key, 
-            summary=summary_text, 
-            description=description
+            issue_key=issue_key,
+            summary=f"Análisis de {issue_key}",
+            description="Resumen generado",
         )
+
+    def generate_traceability(
+        self,
+        issue_key: str,
+        analysis_result: Any,  # AnalysisResult model
+    ) -> TraceabilityMatrix:
+        """
+        Genera matriz de trazabilidad desde AnalysisResult.
+        Wrapper compatible con orchestrator.
+        """
+        log.info(f"Generating traceability for {issue_key}")
+
+        matrix = TraceabilityMatrix(issue_key)
+
+        # Extraer business rules con trazabilidad
+        if hasattr(analysis_result, 'raw'):
+            raw = getattr(analysis_result, 'raw', {})
+            business_rules_raw = raw.get("business_rules", []) if isinstance(raw, dict) else []
+        else:
+            business_rules_raw = []
+
+        # Mapear cada regla a su origen
+        for idx, rule_dict in enumerate(business_rules_raw, 1):
+            if isinstance(rule_dict, dict):
+                rule_text = rule_dict.get("rule", "")
+                traceability = rule_dict.get("traceability", {})
+            else:
+                rule_text = str(rule_dict)
+                traceability = {}
+
+            link = TraceabilityLink(
+                ac_id=f"BR-{idx}",  # Business Rule
+                ac_text=rule_text,
+                scenario_name=f"Scenario BR-{idx}",
+                scenario_line=5 + (idx * 5),
+                source_type=traceability.get("source_type", "jira"),
+                source_id=traceability.get("source_id", issue_key),
+                source_name=traceability.get("source_name", "Issue"),
+            )
+            matrix.add_link(link)
+
+        return matrix
     
     def generate_traceability_matrix(self, issue_key: str, analysis_result: dict[str, Any]) -> TraceabilityMatrix:
         """Genera matriz de trazabilidad."""

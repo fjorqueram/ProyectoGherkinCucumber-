@@ -73,3 +73,6 @@ exclude_lines = [
     "raise NotImplementedError",
     "if __name__ == .__main__.:",
 ]
+
+[project.scripts]
+gherkin = "ai_qa_gherkin.cli:cli"

@@ -1,183 +1,121 @@
+
 from __future__ import annotations
 import json
-import openai
+import os
 from typing import Any
-from tenacity import retry, stop_after_attempt, wait_exponential
-from ai_qa_gherkin.config import settings
+from dotenv import load_dotenv
+from openai import OpenAI
 from ai_qa_gherkin.logger import get_logger
 
 log = get_logger("llm_client")
+load_dotenv()
+
 
 class LLMClient:
-    """Cliente para interactuar con LLM (OpenAI, Anthropic, etc.)."""
+    """Cliente para interactuar con OpenAI."""
 
     def __init__(self) -> None:
-        self.provider = settings.llm_provider.lower()
-        self.timeout = settings.llm_timeout_seconds
-
-        if self.provider == "openai":
-            try:
-                self.client = openai.OpenAI(api_key=settings.openai_api_key)
-                self.model = settings.openai_model
-            except ImportError:
-                raise ImportError("openai package not installed. Run: pip install openai")
-        else:
-            raise ValueError(f"Unsupported LLM provider: {self.provider}")
-
-        log.info(f"LLMClient initialized with provider={self.provider}, model={self.model}")
-
-    @retry(
-        stop=stop_after_attempt(settings.retry_max_attempts),
-        wait=wait_exponential(
-            multiplier=1,
-            min=settings.retry_min_seconds,
-            max=settings.retry_max_seconds,
-        ),
-    )
-    def extract_business_rules(self, context: dict[str, Any]) -> dict[str, Any]:
-        """
-        Extrae reglas de negocio usando LLM.
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY not configured in .env")
         
-        Args:
-            context: Contexto merged con issue, confluence, git
-            
-        Returns:
-            Dict con business_rules, preconditions, happy_paths, error_scenarios
-        """
-        log.info("Extracting business rules using LLM")
+        self.client = OpenAI(api_key=api_key)
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4")
+        log.info(f"LLMClient initialized with model: {self.model}")
 
-        prompt = self._build_analysis_prompt(context)
+    def extract_business_rules(self, merged_context: dict[str, Any]) -> dict[str, Any]:
+        """Extrae reglas de negocio usando OpenAI."""
+        issue = merged_context.get("issue", {})
+        issue_key = issue.get("issue_key", "UNKNOWN")
+        summary = issue.get("summary", "")
+        description = issue.get("description", "")
+        ac = issue.get("acceptance_criteria", [])
+
+        prompt = f"""Analiza este requisito y extrae información para generar escenarios Gherkin.
+
+    REQUISITO:
+    - Issue: {issue_key}
+    - Resumen: {summary}
+    - Descripción: {description}
+    - Criterios de Aceptación:
+    {chr(10).join(f'  • {c}' for c in ac) if ac else '  (ninguno)'}
+
+    TAREAS:
+    1. Identifica 3-5 reglas de negocio principales
+    2. Lista 2-3 supuestos implícitos
+    3. Identifica 1-3 riesgos potenciales
+    4. Define 1-2 caminos felices (happy paths) con sus pasos
+    5. Sugiere 1-2 escenarios de error
+
+    Responde SOLO en JSON válido (sin markdown):
+    {{
+        "business_rules": [
+            {{"description": "regla1", "category": "general"}},
+            {{"description": "regla2", "category": "validation"}}
+        ],
+        "preconditions": [
+            "supuesto1",
+            "supuesto2"
+        ],
+        "happy_paths": [
+            {{
+                "name": "Camino feliz principal",
+                "steps": ["paso1", "paso2", "paso3"]
+            }}
+        ],
+        "error_scenarios": [
+            {{
+                "error_type": "validation",
+                "description": "Input inválido",
+                "expected_outcome": "Error mostrado al usuario"
+            }}
+        ]
+    }}
+    """
 
         try:
+            log.info(f"Calling OpenAI {self.model} for {issue_key}")
+            
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert QA engineer specializing in BDD and Gherkin scenarios.",
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    },
-                ],
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
-                timeout=self.timeout,
+                max_tokens=2000,
             )
 
-            content = response.choices[0].message.content
+            # Validar que content no sea None
+            if not response.choices or not response.choices[0].message.content:
+                raise ValueError("Empty response from OpenAI")
+
+            response_text = response.choices[0].message.content.strip()
             
-            # ← VERSIÓN CONCISA
-            if not content:
-                log.warning("LLM returned empty content, using fallback")
-                return self._get_fallback_result()
+            # Limpiar markdown si viene
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
             
-            result = self._parse_llm_response(content)
-            log.info("Successfully extracted business rules from LLM")
-            return result
-
-        except Exception as e:
-            log.error(f"LLM extraction failed: {str(e)}")
-            raise
-    
-    def _get_fallback_result(self) -> dict[str, Any]:
-        """Retorna estructura vacía cuando LLM falla."""
-        return {
-            "business_rules": [],
-            "preconditions": [],
-            "happy_paths": [],
-            "error_scenarios": [],
-            "assumptions": [],
-            "risks": [],
-        }
-
-    def _build_analysis_prompt(self, context: dict[str, Any]) -> str:
-        """Construye prompt para análisis."""
-        issue = context.get("issue", {})
-        confluence = context.get("confluence") or {}  # ← AGREGAR: or {}
-        git = context.get("git") or {}  # ← AGREGAR: or {}
-
-        prompt = f"""
-        Analyze the following context and extract structured business rules, preconditions, happy paths, and error scenarios.
-
-        ISSUE (Jira):
-        - Key: {issue.get('issue_key', 'N/A')}
-        - Summary: {issue.get('summary', 'N/A')}
-        - Description: {issue.get('description', 'N/A')}
-        - Acceptance Criteria: {json.dumps(issue.get('acceptance_criteria', []), indent=2)}
-
-        DOCUMENTATION (Confluence):
-        - Title: {confluence.get('title', 'N/A')}
-        - Content: {confluence.get('content', 'N/A')[:500]}...
-
-        CODE CHANGES (Git):
-        - Commit: {git.get('commit_sha', 'N/A')}
-        - Changed Files: {json.dumps(git.get('changed_files', []), indent=2)}
-        - Summary: {git.get('diff_summary', 'N/A')}
-
-        TASK:
-        Extract and return a JSON object with:
-        1. business_rules: list of business rules
-        2. preconditions: list of preconditions
-        3. happy_paths: list of happy paths (successful scenarios)
-        4. error_scenarios: list of error/validation scenarios
-        5. assumptions: list of assumptions
-        6. risks: list of potential risks
-
-        Each item should include:
-        - description (string)
-        - category (string: general, validation, permission, performance, etc.)
-        - priority (high, medium, low)
-
-        Return ONLY valid JSON, no markdown or extra text.
-        """
-        return prompt
-    
-    def _parse_llm_response(self, content: str) -> dict[str, Any]:
-        """
-        Parsea respuesta del LLM.
-        
-        Espera JSON con estructura:
-        {{
-            "business_rules": [...],
-            "preconditions": [...],
-            "happy_paths": [...],
-            "error_scenarios": [...],
-            "assumptions": [...],
-            "risks": [...]
-        }}
-        """
-        try:
-            # Limpiar markdown si lo hay
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0]
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0]
-
-            result = json.loads(content)
-
-            # Validar estructura mínima
-            required_keys = [
-                "business_rules",
-                "preconditions",
-                "happy_paths",
-                "error_scenarios",
-            ]
-            for key in required_keys:
-                if key not in result:
-                    result[key] = []
-
+            result = json.loads(response_text)
+            log.info(f"LLM analysis complete for {issue_key}")
+            
             return result
 
         except json.JSONDecodeError as e:
-            log.error(f"Failed to parse LLM response: {str(e)}")
-            log.debug(f"Raw content: {content[:200]}")
-            # Retornar estructura vacía en caso de error
+            log.error(f"JSON parse error from OpenAI: {str(e)}")
+            log.warning(f"Returning empty result for {issue_key}")
             return {
                 "business_rules": [],
                 "preconditions": [],
                 "happy_paths": [],
                 "error_scenarios": [],
-                "assumptions": [],
-                "risks": [],
+            }
+        except Exception as e:
+            log.error(f"Error calling OpenAI: {str(e)}")
+            log.warning(f"Returning empty result for {issue_key}")
+            return {
+                "business_rules": [],
+                "preconditions": [],
+                "happy_paths": [],
+                "error_scenarios": [],
             }

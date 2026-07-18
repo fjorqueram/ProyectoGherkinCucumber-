@@ -1,97 +1,34 @@
 from __future__ import annotations
 from typing import Any
-from ai_qa_gherkin.clients.llm_client import LLMClient
+from dotenv import load_dotenv
 from ai_qa_gherkin.logger import get_logger
-from ai_qa_gherkin.models import AnalysisResult
+from ai_qa_gherkin.models.domain import (
+    BusinessRule,
+    Precondition,
+    HappyPath,
+    ErrorScenario,
+    TraceabilityLink,
+    AnalysisResult,
+)
+from ai_qa_gherkin.clients.llm_client import LLMClient
 
 log = get_logger("analysis_service")
+load_dotenv()
 
-class TraceabilityLink:
-    """Representa la trazabilidad de una regla a su origen."""
-
-    def __init__(self, source_type: str, source_id: str, source_name: str, line_number: int | None = None,) -> None:
-        self.source_type = source_type
-        self.source_id = source_id
-        self.source_name = source_name
-        self.line_number = line_number
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "source_type": self.source_type,
-            "source_id": self.source_id,
-            "source_name": self.source_name,
-            "line_number": self.line_number,
-        }
-    
-class BusinessRule:
-    """Regla de negocio extraída con trazabilidad."""
-
-    def __init__(self, rule: str, traceability: TraceabilityLink, category: str = "general",) -> None:
-        self.rule = rule
-        self.traceability = traceability
-        self.category = category
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "rule": self.rule,
-            "traceability": self.traceability.to_dict(),
-            "category": self.category,
-        }
-
-class Precondition:
-        """Precondición para un escenario."""
-
-        def __init__(self, precondition: str, traceability: TraceabilityLink) -> None:
-            self.precondition = precondition
-            self.traceability = traceability
-
-        def to_dict(self) -> dict[str, Any]:
-            return {
-                "precondition": self.precondition,
-                "traceability": self.traceability.to_dict(),
-            }
-        
-class HappyPath:
-    """Camino feliz (flujo exitoso) de un escenario."""
-
-    def __init__(self, name: str, steps: list[str], traceability: TraceabilityLink) -> None:
-        self.name = name
-        self.steps = steps
-        self.traceability = traceability
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "steps": self.steps,
-            "traceability": self.traceability.to_dict(),
-        }
-    
-class ErrorScenario:
-    """Escenario de error/validación."""
-
-    def __init__(self, error_type: str, description: str, expected_outcome: str, traceability: TraceabilityLink) -> None:
-        self.error_type = error_type
-        self.description = description
-        self.expected_outcome = expected_outcome
-        self.traceability = traceability
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "error_type": self.error_type,
-            "description": self.description,
-            "expected_outcome": self.expected_outcome,
-            "traceability": self.traceability.to_dict(),
-        }
-    
 class AnalysisService:
-    """
-    Servicio de análisis que extrae reglas de negocio usando LLM.
-    Mantiene trazabilidad a las fuentes originales.
-    """
+    """Servicio de análisis con soporte para LLM real o mock."""
 
-    def __init__(self, use_llm: bool = True) -> None:
+    def __init__(self, use_llm: bool = False) -> None:
         self.use_llm = use_llm
-        self.llm_client = LLMClient() if use_llm else None  
+        try:
+            self.llm_client = LLMClient() if use_llm else None
+            if use_llm:
+                log.info("LLMClient initialized successfully")
+        except ValueError as e:
+            log.warning(f"LLMClient initialization failed: {str(e)}, using mock mode")
+            self.use_llm = False
+            self.llm_client = None
+        
         self.business_rules: list[BusinessRule] = []
         self.preconditions: list[Precondition] = []
         self.happy_paths: list[HappyPath] = []
@@ -108,26 +45,25 @@ class AnalysisService:
         issue_key = issue_data.get("issue_key") or merged_context.get("issue_key", "UNKNOWN")
         scope = merged_context.get("primary_scope", "")
 
-        # Limpiar analisis previos
+        # Limpiar análisis previos
         self.business_rules = []
         self.preconditions = []
         self.happy_paths = []
         self.error_scenarios = []
 
-        # ← AGREGAR VALIDACIÓN
+        # Usar LLM o mock
         if self.use_llm and self.llm_client is not None:
             log.info(f"Analyzing {issue_key} with LLM")
-            llm_result = self.llm_client.extract_business_rules(merged_context)
-            self._process_llm_result(llm_result, merged_context)
+            try:
+                llm_result = self.llm_client.extract_business_rules(merged_context)
+                self._process_llm_result(llm_result, merged_context)
+            except Exception as e:
+                log.warning(f"LLM analysis failed: {str(e)}, falling back to mock")
+                self._analyze_with_mock(merged_context)
         else:
-            # ← ANTIGUO: Mantener análisis manual mockeado
+            # Análisis manual mockeado
             log.info(f"Analyzing {issue_key} with mock rules")
-            if merged_context.get("issue"):
-                self._extract_from_issue(merged_context["issue"])
-            if merged_context.get("confluence"):
-                self._extract_from_confluence(merged_context["confluence"])
-            if merged_context.get("git"):
-                self._extract_from_git(merged_context["git"])
+            self._analyze_with_mock(merged_context)
 
         # Construir AnalysisResult
         analysis_result = AnalysisResult(
@@ -138,10 +74,10 @@ class AnalysisService:
             risks=self._extract_risks(merged_context),
             confidence=self._calculate_confidence(),
             raw={
-                "business_rules": [br.to_dict() for br in self.business_rules],
-                "preconditions": [pc.to_dict() for pc in self.preconditions],
-                "happy_paths": [hp.to_dict() for hp in self.happy_paths],
-                "error_scenarios": [es.to_dict() for es in self.error_scenarios],
+                "business_rules": [br.model_dump() for br in self.business_rules],
+                "preconditions": [pc.model_dump() for pc in self.preconditions],
+                "happy_paths": [hp.model_dump() for hp in self.happy_paths],
+                "error_scenarios": [es.model_dump() for es in self.error_scenarios],
             },
         )
 
@@ -153,7 +89,16 @@ class AnalysisService:
         )
 
         return analysis_result
-    
+
+    def _analyze_with_mock(self, context: dict[str, Any]) -> None:
+        """Realiza análisis mock."""
+        if context.get("issue"):
+            self._extract_from_issue(context["issue"])
+        if context.get("confluence"):
+            self._extract_from_confluence(context["confluence"])
+        if context.get("git"):
+            self._extract_from_git(context["git"])
+
     def _extract_from_issue(self, issue: dict[str, Any]) -> None:
         """Extrae reglas de negocio, precondiciones desde Jira issue."""
         log.debug(f"Extracting from issue {issue.get('issue_key')}")
@@ -169,7 +114,7 @@ class AnalysisService:
             source_name=summary,
         )
 
-        # Regla de negocio principal (ejemplo: del resumen)
+        # Regla de negocio principal
         if summary:
             main_rule = BusinessRule(
                 rule=f"Feature '{summary}' must be implemented",
@@ -185,9 +130,9 @@ class AnalysisService:
                 traceability=trace,
                 category="validation",
             )
-            self.business_rules.append(rule) 
+            self.business_rules.append(rule)
 
-        # Precondiciones (si están explícitas en descripción)
+        # Precondiciones
         if "precondition" in description.lower() or "prerequisite" in description.lower():
             precond = Precondition(
                 precondition=description,
@@ -195,7 +140,7 @@ class AnalysisService:
             )
             self.preconditions.append(precond)
 
-        # Camino feliz (flujo principal)
+        # Camino feliz
         if summary:
             happy_path = HappyPath(
                 name=f"Happy path for {summary}",
@@ -223,7 +168,7 @@ class AnalysisService:
             source_name=title,
         )
 
-        # Buscar patrones comunes en documentación
+        # Buscar patrones comunes
         if "validation" in content.lower():
             rule = BusinessRule(
                 rule="Input validation must be performed",
@@ -285,28 +230,23 @@ class AnalysisService:
 
     def _extract_assumptions(self, context: dict[str, Any]) -> list[str]:
         """Extrae supuestos del contexto."""
-        assumptions = [
+        return [
             "Issue is well-defined with clear acceptance criteria",
             "All required integrations are available",
             "Network connectivity is stable",
         ]
-        return assumptions
     
     def _extract_risks(self, context: dict[str, Any]) -> list[str]:
         """Extrae riesgos potenciales."""
-        risks = [
+        return [
             "Integration failures with external services",
             "Data validation edge cases",
             "Performance issues with large datasets",
             "Concurrent access conflicts",
         ]
-        return risks
     
     def _calculate_confidence(self) -> float:
-        """
-        Calcula nivel de confianza basado en cantidad de reglas
-        y cobertura de fuentes.
-        """
+        """Calcula nivel de confianza."""
         total_extractions = (
             len(self.business_rules)
             + len(self.preconditions)
@@ -314,7 +254,6 @@ class AnalysisService:
             + len(self.error_scenarios)
         )
 
-        # Base 0.5, incrementar por extracciones
         confidence = min(0.5 + (total_extractions * 0.05), 1.0)
         return round(confidence, 2)
     
@@ -399,4 +338,3 @@ class AnalysisService:
             f"  Error Scenarios: {len(self.error_scenarios)}\n"
             f"  Confidence: {self._calculate_confidence():.1%}"
         )
-    
