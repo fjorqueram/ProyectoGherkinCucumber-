@@ -15,12 +15,20 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import sys
+import io
 import click
 from ai_qa_gherkin.logger import get_logger
 from ai_qa_gherkin.orchestrator import Orchestrator, PipelineState
 from ai_qa_gherkin.services.validator_service import GherkinValidator
+from ai_qa_gherkin.models.domain import PipelineResult
 
 log = get_logger("cli")
+
+if sys.platform == 'win32':
+    # Configura UTF-8 para Windows
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 @click.group()
 @click.option("--output-dir", default="output", help="Directorio de salida")
@@ -35,34 +43,24 @@ def cli(ctx: click.Context, output_dir: str, use_llm: bool, verbose: bool) -> No
     ctx.obj["verbose"] = verbose
 
 @cli.command()
-@click.argument("issue_key")
-@click.option("--summary", help="Resumen del issue")
-@click.option("--description", help="Descripción del issue")
-@click.option("--criteria", multiple=True, help="Criterios de aceptación")
-@click.pass_context
-def generate(ctx: click.Context, issue_key: str, summary: str | None, description: str | None, criteria: tuple[str, ...]) -> None:
-    """Genera Feature Gherkin desde un issue."""
-    click.echo(f"\n📋 Generando Feature para {issue_key}...\n")
-
+@click.argument('issue_key')
+@click.option('--output-dir', default='output', help='Output directory')
+@click.option('--use-llm', is_flag=True, help='Use LLM for analysis')
+def generate(issue_key: str, output_dir: str, use_llm: bool) -> None:
+    """Genera Feature Gherkin desde un issue de Jira."""
     try:
-        issue_data = {
-            "issue_key": issue_key,
-            "summary": summary or f"Feature for {issue_key}",
-            "description": description or "",
-            "acceptance_criteria": list(criteria) if criteria else [],
-        }
-
-        orchestrator = Orchestrator(
-            output_dir=ctx.obj["output_dir"],
-            use_llm=ctx.obj["use_llm"],
-        )
-        result = orchestrator.run_pipeline(issue_key=issue_key, issue_data=issue_data)
-        click.echo(orchestrator.get_summary(result))
-        sys.exit(0 if result.state == PipelineState.PUBLISHED else 1)
-
+        click.echo(f"\n[*] Generando Feature para {issue_key}...\n")
+        
+        orchestrator = Orchestrator(output_dir=output_dir, use_llm=use_llm)
+        result = orchestrator.run_pipeline(issue_key)
+        
+        click.echo(f"✓ Feature generado exitosamente")
+        click.echo(f"   Issue: {result.issue_key}")
+        click.echo(f"   Confianza: {result.confidence:.0%}")
+        
     except Exception as e:
-        click.echo(f"\n❌ Error: {str(e)}\n", err=True)
-        sys.exit(1)
+        click.echo(f"✗ Error: {str(e)}", err=True)
+        raise
 
 @cli.command()
 @click.argument("feature_path", type=click.Path(exists=True))

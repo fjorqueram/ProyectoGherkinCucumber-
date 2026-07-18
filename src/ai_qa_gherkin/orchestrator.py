@@ -7,12 +7,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 from ai_qa_gherkin.logger import get_logger
-from ai_qa_gherkin.models import AnalysisResult, GeneratedFeature  # ← AGREGAR GeneratedFeature
+from ai_qa_gherkin.models.domain import AnalysisResult
 from ai_qa_gherkin.services.analysis_service import AnalysisService
 from ai_qa_gherkin.services.collector_service import ContextCollector
 from ai_qa_gherkin.services.gherkin_service import GherkinService
 from ai_qa_gherkin.services.summary_service import SummaryService
 from ai_qa_gherkin.services.validator_service import GherkinValidator
+from ai_qa_gherkin.clients.xray_client import XrayClient
+from ai_qa_gherkin.retry import PermanentError, TransientError
 
 log = get_logger("orchestrator")
 
@@ -39,6 +41,7 @@ class PipelineResult:
     feature_path: str | None = None
     summary_path: str | None = None
     traceability_path: str | None = None
+    state_path: str | None = None  # ← AGREGAR
 
     # Datos del pipeline
     collected_context: dict[str, Any] = field(default_factory=dict)
@@ -50,6 +53,7 @@ class PipelineResult:
     context_hash: str | None = None
     error: str | None = None
     duration_seconds: float = 0.0
+    confidence: float = 0.7  # ← AGREGAR
 
     def to_dict(self) -> dict[str, Any]:
         """Convierte el resultado del pipeline a un diccionario."""
@@ -60,9 +64,11 @@ class PipelineResult:
             "feature_path": self.feature_path,
             "summary_path": self.summary_path,
             "traceability_path": self.traceability_path,
+            "state_path": self.state_path,  # ← AGREGAR
             "context_hash": self.context_hash,
             "error": self.error,
             "duration_seconds": self.duration_seconds,
+            "confidence": self.confidence,  # ← AGREGAR
             "validation_result": self.validation_result,
         }
     
@@ -209,13 +215,32 @@ class Orchestrator:
     def _analyze(self, result: PipelineResult) -> PipelineResult:
         """Paso 2: Analizar contexto con IA."""
         try:
-            analysis_result = self.analyzer.analyze(result.collected_context)
-            result.analysis_result = analysis_result
+            analysis_dict = self.analyzer.analyze(result.collected_context)
+            
+            # Extraer solo los strings de business_rules
+            business_rules = []
+            for br in analysis_dict.get("business_rules", []):
+                if isinstance(br, dict):
+                    business_rules.append(br.get("rule", ""))
+                else:
+                    business_rules.append(str(br))
+            
+            # Convertir dict a AnalysisResult
+            result.analysis_result = AnalysisResult(
+                issue_key=analysis_dict.get("issue_key", result.issue_key),
+                scope_summary=analysis_dict.get("scope_summary", ""),
+                business_rules=business_rules,
+                assumptions=self.analyzer._extract_assumptions(result.collected_context),
+                risks=self.analyzer._extract_risks(result.collected_context),
+                raw=analysis_dict.get("raw", {}),
+                confidence=self.analyzer._calculate_confidence(),
+            )
+            
             result.state = PipelineState.ANALYZED
 
             log.info(
-                f"Analysis complete: {len(analysis_result.business_rules)} rules, "
-                f"confidence: {analysis_result.confidence}"
+                f"Analysis complete: {len(result.analysis_result.business_rules)} rules, "
+                f"confidence: {result.analysis_result.confidence}"
             )
             return result
         
@@ -274,12 +299,15 @@ class Orchestrator:
             # Validar Gherkin
             validation_result = self.validator.validate(result.feature_content)
             
+            # Actualizar confianza
+            result.confidence = validation_result.confidence  # ← AGREGAR
+            
             # Guardar resultado de validación
             result.validation_result = {
                 "is_valid": validation_result.is_valid,
                 "confidence": validation_result.confidence,
-                "errors": validation_result.errors,  # Ya son dicts
-                "warnings": validation_result.warnings,  # Ya son dicts
+                "errors": validation_result.errors,
+                "warnings": validation_result.warnings,
                 "raw": validation_result.raw,
             }
 

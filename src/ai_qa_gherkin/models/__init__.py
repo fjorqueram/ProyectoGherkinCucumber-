@@ -12,6 +12,7 @@ from .domain import (
     ValidationResult,
     PublishResult,
     ExecutionResult,
+    PipelineResult
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "ValidationResult",
     "PublishResult",
     "ExecutionResult",
+    "PipelineResult",
 ]

@@ -7,6 +7,7 @@ import requests
 from typing import Any
 from ai_qa_gherkin.logger import get_logger
 from ai_qa_gherkin.models import (ConfluenceContext, GitContext, IssueContext)
+from ai_qa_gherkin.clients.jira_client import JiraClient
 
 log = get_logger("collector_service")
 load_dotenv()
@@ -240,7 +241,27 @@ class ContextCollector:
 
         # Si se pasa issue_key, traer de Jira
         if issue and "issue_key" in issue and not issue.get("summary"):
-            issue = self._fetch_from_jira(issue["issue_key"])
+            try:
+                jira_client = JiraClient()  # ← USAR JIRACLIENT
+                jira_issue = jira_client.get_issue(issue["issue_key"])
+                
+                issue = {
+                    "issue_key": jira_issue.key,
+                    "summary": jira_issue.summary,
+                    "description": jira_issue.description,
+                    "acceptance_criteria": self._parse_ac_text(jira_issue.acceptance_criteria),
+                    "links": jira_issue.links,
+                }
+                log.info(f"Fetched {jira_issue.key} from Jira with {len(issue['acceptance_criteria'])} AC")
+            except Exception as e:
+                log.warning(f"Failed to fetch from Jira: {str(e)}, using mock data")
+                # Fallback: usar datos vacíos
+                issue = {
+                    "issue_key": issue.get("issue_key", "UNKNOWN"),
+                    "summary": "",
+                    "description": "",
+                    "acceptance_criteria": [],
+                }
 
         # Normalizar cada fuente
         normalized_issue = self._normalize_issue(issue)
@@ -261,80 +282,67 @@ class ContextCollector:
 
         log.info("Context collection complete")
         return merged_context
-    
-    def _fetch_from_jira(self, issue_key: str) -> dict[str, Any]:
-        """Trae datos reales de Jira API."""
-        jira_url = os.getenv("JIRA_BASE_URL", "").rstrip("/")
-        jira_email = os.getenv("JIRA_EMAIL", "")
-        jira_token = os.getenv("JIRA_API_TOKEN", "")
 
-        if not jira_url or not jira_email or not jira_token:
-            log.warning(f"Jira credentials not configured, using mock data for {issue_key}")
-            return {"issue_key": issue_key, "summary": f"Mock: {issue_key}"}
-
-        try:
-            url = f"{jira_url}/rest/api/3/issues/{issue_key}"
-            response = requests.get(
-                url,
-                auth=(jira_email, jira_token),
-                headers={"Accept": "application/json"}
-            )
-
-            if response.status_code == 200:
-                jira_data = response.json()
-                fields = jira_data.get("fields", {})
-                
-                # Extraer criterios de aceptación del campo Description o custom field
-                description = fields.get("description", "")
-                ac = self._extract_ac_from_description(description)
-
-                log.info(f"Fetched {issue_key} from Jira: {fields.get('summary')}")
-                
-                return {
-                    "issue_key": issue_key,
-                    "summary": fields.get("summary", ""),
-                    "description": description or "",
-                    "acceptance_criteria": ac,
-                    "status": fields.get("status", {}).get("name", ""),
-                    "assignee": fields.get("assignee", {}).get("displayName", ""),
-                    "priority": fields.get("priority", {}).get("name", ""),
-                }
-            else:
-                log.error(f"Jira API error: {response.status_code} - {response.text}")
-                return {"issue_key": issue_key, "summary": f"Error fetching {issue_key}"}
-
-        except Exception as e:
-            log.error(f"Error fetching from Jira: {str(e)}")
-            return {"issue_key": issue_key, "summary": f"Error: {str(e)}"}
-        
-    def _extract_ac_from_description(self, description: str) -> list[str]:
-        """Extrae criterios de aceptación del description."""
-        if not description:
+    def _parse_ac_text(self, ac_text: str) -> list[str]:
+        """
+        Parsea AC en diferentes formatos:
+        - Escenario X: ...
+        - AC1: / AC 1: / Criterio 1:
+        - Given/When/Then
+        - - Bullet points
+        - * Asteriscos
+        """
+        if not ac_text:
             return []
         
         criteria = []
-        lines = description.split("\n")
+        lines = ac_text.split("\n")
         
-        in_ac_section = False
+        current_scenario = ""
+        
         for line in lines:
-            line = line.strip()
+            line_stripped = line.strip()
             
-            # Buscar sección de AC
-            if line.lower().startswith("acceptance criteria") or line.lower().startswith("criterios de aceptación"):
-                in_ac_section = True
+            if not line_stripped:
+                if current_scenario:
+                    criteria.append(current_scenario)
+                    current_scenario = ""
                 continue
             
-            # Si estamos en sección de AC
-            if in_ac_section:
-                if line.startswith("-") or line.startswith("*") or line.startswith("•"):
-                    criteria.append(line.lstrip("-*•").strip())
-                elif line == "":
-                    continue
-                elif line.startswith(("##", "###", "Given", "When", "Then")):
-                    break
+            # Detectar inicio de escenario/criterio
+            if any(marker in line_stripped.lower() for marker in [
+                "escenario", "ac ", "ac1", "ac2", "criterio", "requirement"
+            ]):
+                if current_scenario:
+                    criteria.append(current_scenario)
+                current_scenario = line_stripped
+            
+            # Detectar Gherkin steps (Dado/Cuando/Entonces / Given/When/Then)
+            elif any(marker in line_stripped.lower() for marker in [
+                "dado ", "cuando ", "entonces ", 
+                "given ", "when ", "then "
+            ]):
+                if current_scenario:
+                    current_scenario += f" {line_stripped}"
+                else:
+                    current_scenario = line_stripped
+            
+            # Detectar bullet points
+            elif line_stripped.startswith(("-", "*", "•", "→")):
+                cleaned = line_stripped.lstrip("-*•→").strip()
+                if cleaned and len(cleaned) > 5:
+                    if current_scenario:
+                        current_scenario += f" | {cleaned}"
+                    else:
+                        current_scenario = cleaned
         
-        return criteria
-
+        # Agregar último
+        if current_scenario:
+            criteria.append(current_scenario)
+        
+        # Normalizar y filtrar
+        criteria = [c.strip() for c in criteria if len(c.strip()) > 10]
+        return self.normalizer.remove_duplicates(criteria)
 
     def _normalize_issue(self, issue: dict[str, Any] | None) -> dict[str, Any]:
         """Normaliza datos de Jira issue."""
@@ -366,7 +374,7 @@ class ContextCollector:
             "title": confluence.get("title", ""),
             "content": confluence.get("content", ""),
             "url": confluence.get("url", ""),
-        }
+            }
 
     def _normalize_git(self, git: dict[str, Any] | None) -> dict[str, Any] | None:
         """Normaliza datos de Git."""

@@ -4,7 +4,8 @@ import os
 from datetime import datetime
 from typing import Any
 from ai_qa_gherkin.logger import get_logger
-from ai_qa_gherkin.models import GeneratedFeature
+from ai_qa_gherkin.models.domain import GeneratedFeature
+from ai_qa_gherkin.utils.text_cleaner import TextCleaner
 
 log = get_logger("gherkin_service")
 
@@ -168,18 +169,20 @@ SALIDA ESPERADA:
 Devuelve solo escenarios en formato Gherkin, sin explicaciones."""
 
     def generate_from_analysis(self, analysis_result: dict[str, Any]) -> GeneratedFeature:
-        """
-        Genera Feature Gherkin desde análisis.
-        
-        En producción, aquí se integraría una llamada a LLM (OpenAI/Claude).
-        Por ahora, genera estructura básica automáticamente.
-        """
+        """Genera Feature Gherkin desde análisis."""
         log.info(f"Generating Gherkin for {analysis_result.get('issue_key')}")
+
+        # Limpiar todos los datos
+        scope = TextCleaner.clean(analysis_result.get("scope_summary", "Feature"))
 
         issue_key = analysis_result.get("issue_key", "UNKNOWN")
         scope = analysis_result.get("scope_summary", "Feature")
+        raw_data = analysis_result.get("raw", {})
+        
+        # Extraer datos reales
+        happy_paths = raw_data.get("happy_paths", [])
+        error_scenarios = raw_data.get("error_scenarios", [])
         business_rules = analysis_result.get("business_rules", [])
-        error_scenarios = analysis_result.get("raw", {}).get("error_scenarios", [])
 
         # Construir feature
         feature = GherkinFeature(
@@ -197,73 +200,103 @@ Devuelve solo escenarios en formato Gherkin, sin explicaciones."""
             ]
         )
 
-        # Happy Path
-        happy_scenario = GherkinScenario(
-            name="Flujo exitoso de la funcionalidad",
-            given=[
-                "que el usuario está autenticado",
-                "que existe la información requerida",
-            ],
-            when=[
-                "el usuario ejecuta la acción",
-                "el sistema procesa la solicitud",
-            ],
-            then=[
-                "se obtiene el resultado esperado",
-                "se registra la acción en logs",
-            ],
-            tags=["smoke"],
-            language="es",  # ← agregar
-        )
-        feature.add_scenario(happy_scenario)
+        # **NUEVO: Generar escenarios desde happy_paths extraídos**
+        scenario_count = 0
+        for i, hp in enumerate(happy_paths):
+            if isinstance(hp, dict):
+                name = hp.get("name", f"Escenario {i+1}").strip()
+                steps = hp.get("steps", [])
+                
+                # Limpiar nombre: remover caracteres rotos y truncar
+                name = name.split("Dado")[0].strip()  # Cortar donde empieza "Dado"
+                name = ''.join(c for c in name if ord(c) >= 32 or c in '\n\t')  # Remover caracteres inválidos
+                name = name[:80].strip()
+                
+                # Dividir steps en Given/When/Then
+                given_steps, when_steps, then_steps = self._split_gherkin_steps(steps)
+                
+                if given_steps or when_steps or then_steps:
+                    scenario = GherkinScenario(
+                        name=name,
+                        given=given_steps or ["que el sistema está preparado"],
+                        when=when_steps or ["se ejecuta la acción"],
+                        then=then_steps or ["se obtiene el resultado esperado"],
+                        tags=["smoke"] if i == 0 else ["validation"],
+                        language="es",
+                    )
+                    feature.add_scenario(scenario)
+                    scenario_count += 1
 
-        # Escenario de validación
-        if business_rules:
-            validation_scenario = GherkinScenario(
-                name="Validación de entrada",
-                given=["que el usuario intenta ingresar datos inválidos"],
-                when=["el usuario envía la solicitud"],
-                then=[
-                    "el sistema rechaza la entrada",
-                    "se muestra mensaje de error descriptivo",
-                ],
-                tags=["validation"],
-                language="es",  # ← agregar
-            )
-            feature.add_scenario(validation_scenario)
+        # **Generar escenarios de error desde error_scenarios**
+        for i, es in enumerate(error_scenarios):
+            if isinstance(es, dict):
+                name = es.get("error_type", f"Validación {i+1}")
+                description = es.get("description", "")
+                expected = es.get("expected_outcome", "")
+                
+                if description or expected:
+                    error_scenario = GherkinScenario(
+                        name=f"Error: {name}",
+                        given=[f"que {description[:80]}"],
+                        when=["se intenta procesar la solicitud"],
+                        then=[f"{expected[:100]}"],
+                        tags=["validation"],
+                        language="es",
+                    )
+                    feature.add_scenario(error_scenario)
+                    scenario_count += 1
 
-        # Escenario de error
-        if error_scenarios:
-            error_scenario = GherkinScenario(
-                name="Manejo de errores",
-                given=["que ocurre un error en el sistema"],
-                when=["el usuario intenta la acción nuevamente"],
-                then=[
-                    "se muestra mensaje de error amigable",
-                    "se permite reintentar la acción",
-                ],
-                tags=["error-handling"],
-                language="es",  # ← agregar
+        # Fallback: Si no hay escenarios, crear uno genérico
+        if scenario_count == 0:
+            default_scenario = GherkinScenario(
+                name="Flujo principal",
+                given=["que el usuario está autenticado"],
+                when=["ejecuta la funcionalidad"],
+                then=["se obtiene el resultado esperado"],
+                tags=["smoke"],
+                language="es",
             )
-            feature.add_scenario(error_scenario)
+            feature.add_scenario(default_scenario)
 
         # Generar texto Gherkin
         gherkin_text = feature.to_gherkin()
+        
+        log.info(f"Generated {scenario_count} scenarios for {issue_key}")
 
-        # Crear GeneratedFeature
-        generated = GeneratedFeature(
+        return GeneratedFeature(
             feature_name=scope,
             gherkin_text=gherkin_text,
             language="es",
             tags=["smoke", "regression"],
-            scenarios_count=len(feature.scenarios),
+            scenarios_count=scenario_count,
             source_issue_key=issue_key,
         )
 
-        log.info(f"Generated {len(feature.scenarios)} scenarios for {issue_key}")
-
-        return generated
+    def _split_gherkin_steps(self, steps: list[str]) -> tuple[list[str], list[str], list[str]]:
+        """Divide steps en Given/When/Then basado en keywords."""
+        given, when, then = [], [], []
         
+        for step in steps:
+            # Limpiar automáticamente
+            step = TextCleaner.clean(step)
+            step_lower = step.lower()
+            
+            # Clasificar step
+            if any(kw in step_lower for kw in ["dado", "given"]):
+                step_cleaned = step.lstrip("Dado ").lstrip("Given ").strip()
+                if step_cleaned and len(step_cleaned) > 3:
+                    given.append(step_cleaned)
+            elif any(kw in step_lower for kw in ["cuando", "when"]):
+                step_cleaned = step.lstrip("Cuando ").lstrip("When ").strip()
+                if step_cleaned and len(step_cleaned) > 3:
+                    when.append(step_cleaned)
+            elif any(kw in step_lower for kw in ["entonces", "then"]):
+                step_cleaned = step.lstrip("Entonces ").lstrip("Then ").strip()
+                if step_cleaned and len(step_cleaned) > 3:
+                    then.append(step_cleaned)
+        
+        return given, when, then
+
     def validate_gherkin(self, gherkin_text: str) -> tuple[bool, list[str]]:
         """
         Valida sintaxis básica de Gherkin.

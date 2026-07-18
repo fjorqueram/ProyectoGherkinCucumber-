@@ -159,3 +159,15 @@ class ExecutionResult(BaseModel):
     execution_key: str = ""
     test_keys: list[str] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+class PipelineResult(BaseModel):
+    """Resultado de ejecutar el pipeline completo."""
+    issue_key: str
+    feature_path: str
+    summary_path: str
+    traceability_path: str
+    state_path: str
+    confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    success: bool = True
+    message: str = ""
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

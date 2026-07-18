@@ -1,8 +1,11 @@
 from __future__ import annotations
+import re
 from typing import Any
 from dotenv import load_dotenv
+from typing import Any, cast
 from ai_qa_gherkin.logger import get_logger
 from ai_qa_gherkin.models.domain import (
+    JiraIssue,
     BusinessRule,
     Precondition,
     HappyPath,
@@ -11,6 +14,7 @@ from ai_qa_gherkin.models.domain import (
     AnalysisResult,
 )
 from ai_qa_gherkin.clients.llm_client import LLMClient
+from ai_qa_gherkin.utils.text_cleaner import TextCleaner
 
 log = get_logger("analysis_service")
 load_dotenv()
@@ -34,61 +38,85 @@ class AnalysisService:
         self.happy_paths: list[HappyPath] = []
         self.error_scenarios: list[ErrorScenario] = []
 
-    def analyze(self, merged_context: dict[str, Any]) -> AnalysisResult:
-        """
-        Analiza contexto merged y extrae reglas, precondiciones,
-        caminos felices y errores.
-        """
-        log.info("Starting analysis of merged context")
+    def analyze(self, issue: JiraIssue | dict[str, Any]) -> dict[str, Any]:
+        """Analiza un issue y extrae reglas de negocio, precondiciones y escenarios."""
+        log.info("Starting analysis of issue")
+
+        # Convertir Pydantic model a dict real
+        try:
+            if isinstance(issue, dict):
+                issue_data: dict[str, Any] = issue
+            elif hasattr(issue, 'model_dump'):
+                issue_data = cast(dict[str, Any], dict(issue.model_dump()))
+            elif hasattr(issue, 'dict'):
+                issue_data = cast(dict[str, Any], dict(issue.dict()))
+            else:
+                issue_data = cast(dict[str, Any], issue.__dict__)
+        except Exception as e:
+            log.error(f"Conversion error: {e}")
+            issue_data = {}
         
-        issue_data = merged_context.get("issue") or {}
-        issue_key = issue_data.get("issue_key") or merged_context.get("issue_key", "UNKNOWN")
-        scope = merged_context.get("primary_scope", "")
+        log.info(f"Issue data converted: {len(issue_data)} keys")
+        
+        self._extract_from_issue(issue_data)
 
-        # Limpiar análisis previos
-        self.business_rules = []
-        self.preconditions = []
-        self.happy_paths = []
-        self.error_scenarios = []
-
-        # Usar LLM o mock
-        if self.use_llm and self.llm_client is not None:
-            log.info(f"Analyzing {issue_key} with LLM")
+        # Helper para convertir modelos
+        def to_dict(obj: Any) -> Any:
             try:
-                llm_result = self.llm_client.extract_business_rules(merged_context)
-                self._process_llm_result(llm_result, merged_context)
+                if isinstance(obj, dict):
+                    return obj
+                if hasattr(obj, 'model_dump'):
+                    return dict(obj.model_dump())
+                if hasattr(obj, 'dict'):
+                    return dict(obj.dict())
+                return obj.__dict__ if hasattr(obj, '__dict__') else obj
             except Exception as e:
-                log.warning(f"LLM analysis failed: {str(e)}, falling back to mock")
-                self._analyze_with_mock(merged_context)
-        else:
-            # Análisis manual mockeado
-            log.info(f"Analyzing {issue_key} with mock rules")
-            self._analyze_with_mock(merged_context)
+                log.warning(f"to_dict error: {e}")
+                return str(obj)
 
-        # Construir AnalysisResult
-        analysis_result = AnalysisResult(
-            issue_key=issue_key,
-            scope_summary=scope,
-            business_rules=[br.rule for br in self.business_rules],
-            assumptions=self._extract_assumptions(merged_context),
-            risks=self._extract_risks(merged_context),
-            confidence=self._calculate_confidence(),
-            raw={
-                "business_rules": [br.model_dump() for br in self.business_rules],
-                "preconditions": [pc.model_dump() for pc in self.preconditions],
-                "happy_paths": [hp.model_dump() for hp in self.happy_paths],
-                "error_scenarios": [es.model_dump() for es in self.error_scenarios],
+        # Compilar resultado
+        result: dict[str, Any] = {
+            "issue_key": issue_data.get("key", "UNKNOWN"),
+            "scope_summary": issue_data.get("summary", ""),
+            "business_rules": [
+                {
+                    "rule": br.rule,
+                    "category": br.category,
+                    "traceability": to_dict(br.traceability),
+                }
+                for br in self.business_rules
+            ],
+            "preconditions": [
+                {
+                    "precondition": pc.precondition,
+                    "traceability": to_dict(pc.traceability),
+                }
+                for pc in self.preconditions
+            ],
+            "raw": {
+                "happy_paths": [
+                    {
+                        "name": hp.name,
+                        "steps": hp.steps,
+                        "traceability": to_dict(hp.traceability),
+                    }
+                    for hp in self.happy_paths
+                ],
+                "error_scenarios": [
+                    {
+                        "error_type": es.error_type,
+                        "description": es.description,
+                        "expected_outcome": es.expected_outcome,
+                        "traceability": to_dict(es.traceability),
+                    }
+                    for es in self.error_scenarios
+                ],
             },
-        )
+        }
 
-        log.info(
-            f"Analysis complete: {len(self.business_rules)} rules, "
-            f"{len(self.preconditions)} preconditions, "
-            f"{len(self.happy_paths)} happy paths, "
-            f"{len(self.error_scenarios)} error scenarios"
-        )
+        log.info(f"Analysis complete: {len(self.happy_paths)} scenarios, {len(self.business_rules)} rules")
 
-        return analysis_result
+        return result
 
     def _analyze_with_mock(self, context: dict[str, Any]) -> None:
         """Realiza análisis mock."""
@@ -100,13 +128,35 @@ class AnalysisService:
             self._extract_from_git(context["git"])
 
     def _extract_from_issue(self, issue: dict[str, Any]) -> None:
-        """Extrae reglas de negocio, precondiciones desde Jira issue."""
-        log.debug(f"Extracting from issue {issue.get('issue_key')}")
+        """Extrae reglas de negocio, precondiciones y escenarios desde Jira issue."""
+        
+        # Si es la estructura merged, extrae el issue real
+        if "issue" in issue and isinstance(issue.get("issue"), dict):
+            actual_issue = issue.get("issue", {})
+        else:
+            actual_issue = issue
+        
+        # Obtener datos del issue
+        issue_key = actual_issue.get("key") or actual_issue.get("issue_key", "")
+        summary = actual_issue.get("summary", "")
+        description = actual_issue.get("description", "")
+        
+        # Buscar acceptance criteria - CONVERTIR A STRING SI ES LISTA
+        acceptance_criteria = (
+            actual_issue.get("acceptance_criteria") or 
+            issue.get("combined_acceptance_criteria", "")
+        )
+        
+        # Si es lista, únela
+        if isinstance(acceptance_criteria, list):
+            acceptance_criteria = " ".join(str(x) for x in acceptance_criteria)
+        else:
+            acceptance_criteria = str(acceptance_criteria)
 
-        issue_key = issue.get("issue_key", "")
-        summary = issue.get("summary", "")
-        description = issue.get("description", "")
-
+        log.info(f"Extracted: key={issue_key}")
+        log.info(f"Summary: {summary[:80] if summary else 'EMPTY'}")
+        log.info(f"AC length: {len(acceptance_criteria)}")
+        
         # Traceabilidad base
         trace = TraceabilityLink(
             source_type="jira",
@@ -123,36 +173,75 @@ class AnalysisService:
             )
             self.business_rules.append(main_rule)
 
-        # Acceptance Criteria como reglas
-        for ac in issue.get("acceptance_criteria", []):
-            rule = BusinessRule(
-                rule=ac,
-                traceability=trace,
-                category="validation",
-            )
-            self.business_rules.append(rule)
+        # **Dividir por "Escenario X:" y procesar cada uno**
+        if acceptance_criteria:
+            log.info(f"Processing acceptance criteria ({len(acceptance_criteria)} chars)")
+            
+            # Dividir en bloques de escenarios
+            scenario_blocks = re.split(r'Escenario\s+\d+:', acceptance_criteria)
+            
+            log.info(f"Found {len(scenario_blocks)} scenario blocks")
+            
+            for block_idx, block in enumerate(scenario_blocks[1:], 1):  # Skip header
+                block = block.strip()
+                if not block:
+                    continue
+                
+                # Obtener nombre (primer párrafo antes de "Dado")
+                match = re.search(r'^([^.]+)', block)
+                scenario_name = match.group(1)[:80] if match else f"Escenario {block_idx}"
+                
+                log.debug(f"Processing scenario {block_idx}: {scenario_name}")
+                
+                # Extraer steps
+                steps = self._extract_gherkin_steps(block)
+                
+                if steps and len(steps) >= 2:
+                    log.info(f"✓ Adding scenario: {scenario_name} ({len(steps)} steps)")
+                    
+                    happy_path = HappyPath(
+                        name=scenario_name,
+                        steps=steps,
+                        traceability=trace,
+                    )
+                    self.happy_paths.append(happy_path)
+                else:
+                    log.debug(f"✗ Scenario {block_idx} rejected: only {len(steps)} steps")
 
-        # Precondiciones
-        if "precondition" in description.lower() or "prerequisite" in description.lower():
-            precond = Precondition(
-                precondition=description,
-                traceability=trace,
-            )
-            self.preconditions.append(precond)
+            log.info(f"Total happy_paths extracted: {len(self.happy_paths)}")
 
-        # Camino feliz
-        if summary:
+        # Fallback
+        if not self.happy_paths and summary:
+            log.warning("No happy paths found, using fallback")
             happy_path = HappyPath(
                 name=f"Happy path for {summary}",
-                steps=[
-                    "User initiates the feature",
-                    "System validates inputs",
-                    "Feature is executed successfully",
-                    "Result is returned to user",
-                ],
+                steps=["User initiates", "System processes", "Result returned"],
                 traceability=trace,
             )
             self.happy_paths.append(happy_path)
+
+    def _extract_gherkin_steps(self, scenario_text: str) -> list[str]:
+        """Extrae pasos Gherkin de un escenario."""
+        steps = []
+        
+        # Primero, reemplaza espacios dobles con newline
+        scenario_text = scenario_text.replace("  ", "\n")
+        
+        lines = scenario_text.split("\n")
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Buscar palabras clave Gherkin al inicio
+            if line and any(line.lower().startswith(kw) for kw in 
+                        ["dado", "cuando", "entonces", "y ", "dado que", "cuando ", "entonces "]):
+                # Limpiar espacios extra
+                line = " ".join(line.split())
+                steps.append(line)
+                log.debug(f"  + Step: {line[:80]}")
+        
+        log.debug(f"Extracted {len(steps)} steps from scenario")
+        return steps
 
     def _extract_from_confluence(self, confluence: dict[str, Any]) -> None:
         """Extrae reglas de negocio desde Confluence."""
