@@ -108,15 +108,12 @@ class Orchestrator:
 
         log.info(f"Orchestrator initialized (use_llm={use_llm}, output_dir={output_dir})")
 
-    def run_pipeline(self, issue_key: str, issue_data: dict[str, Any] | None = None, confluence_data: dict[str, Any] | None = None, git_data: dict[str, Any] | None = None,) -> PipelineResult:
+    def run_pipeline(self, issue_key: str, issue_data: dict[str, Any] | None = None) -> PipelineResult:
         """
         Ejecuta el pipeline completo.
         
         Args:
             issue_key: Clave de Jira (ej: DYF-123)
-            issue_data: Datos del issue (opcional, se obtiene de Jira si no se proporciona)
-            confluence_data: Datos de Confluence (opcional)
-            git_data: Datos de Git (opcional)
             
         Returns:
             PipelineResult con estado y rutas de archivos
@@ -129,7 +126,7 @@ class Orchestrator:
 
             # 1. COLLECT
             log.info("Step 1: Collecting context...")
-            result = self._collect(result, issue_data, confluence_data, git_data)
+            result = self._collect(result, issue_data, None, None)
             if result.state == PipelineState.FAILED:
                 return result
 
@@ -175,26 +172,20 @@ class Orchestrator:
     def _collect(self, result: PipelineResult, issue_data: dict[str, Any] | None, confluence_data: dict[str, Any] | None, git_data: dict[str, Any] | None,) -> PipelineResult:
         """Paso 1: Recolectar contexto."""
         try:
-            # Si no se proporciona, crear estructuras vacías
-            if issue_data is None:
-                issue_data = {
-                    "issue_key": result.issue_key,
-                    "summary": "",
-                    "description": "",
-                    "acceptance_criteria": [],
-                }
-
-            # Normalizar datos
+            log.info(f"Collecting context for {result.issue_key}...")
+            
+            # ✅ USAR LOS NUEVOS PARÁMETROS DE collector.collect()
             merged_context = self.collector.collect(
-                issue=issue_data, 
-                confluence=confluence_data, 
-                git=git_data)
+                issue_key=result.issue_key,  # ← NUEVO PARÁMETRO
+                confluence_search="",
+                git_repo=("fjorqueram", "ProyectoGherkinCucumber")  # ← NUEVO PARÁMETRO (configurable)
+            )
             
             # Calcular hash para idempotencia
             context_hash = self._calculate_context_hash(merged_context)
 
             # Verificar si ya fue procesado (idempotencia)
-            cached_result = self._load_cached_result(result.issue_key, context_hash)  # ← CAMBIAR de _load_state
+            cached_result = self._load_cached_result(result.issue_key, context_hash)
             if cached_result:
                 log.info(f"Found cached result for {result.issue_key}")
                 return cached_result

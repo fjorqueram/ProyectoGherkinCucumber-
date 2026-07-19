@@ -93,8 +93,9 @@ class Precondition(BaseModel):
 class HappyPath(BaseModel):
     """Camino feliz (flujo principal)."""
     name: str
-    steps: list[str] = Field(default_factory=list)
+    steps: list[str]
     traceability: TraceabilityLink
+    source: str = "jira"
 
 
 class ErrorScenario(BaseModel):
@@ -103,6 +104,7 @@ class ErrorScenario(BaseModel):
     description: str
     expected_outcome: str
     traceability: TraceabilityLink
+    source: str = "jira"
 
 
 class AnalysisResult(BaseModel):

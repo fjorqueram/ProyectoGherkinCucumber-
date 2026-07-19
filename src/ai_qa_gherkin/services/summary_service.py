@@ -147,7 +147,7 @@ class TraceabilityMatrix:
             "## Distribución de Fuentes",
             "",
         ])
-        for source, count in distribution.items():
+        for source, count in sorted(distribution.items()):
             lines.append(f"- {source}: {count}")
 
         return "\n".join(lines)
@@ -162,7 +162,7 @@ class SummaryService:
     def generate_executive_summary(
         self,
         issue_key: str,
-        analysis_result: dict[str, Any] | Any,  # Aceptar dict O AnalysisResult
+        analysis_result: Any,  # ✅ Acepta AnalysisResult o dict
         validation_result: dict[str, Any] | None = None,
         gherkin_path: str | None = None,
     ) -> ExecutiveSummary:
@@ -173,13 +173,13 @@ class SummaryService:
         log.info(f"Generating executive summary for {issue_key}")
 
         # Modo 1: AnalysisResult model (desde orchestrator)
-        # Type guard explícito
         if not isinstance(analysis_result, dict) and hasattr(analysis_result, 'business_rules'):
-            # En este punto, Pylance sabe que tiene los atributos
+            # ✅ Type guard explícito
             business_rules = getattr(analysis_result, 'business_rules', [])
             assumptions = getattr(analysis_result, 'assumptions', [])
             risks = getattr(analysis_result, 'risks', [])
             confidence = getattr(analysis_result, 'confidence', 0)
+            scope_summary = getattr(analysis_result, 'scope_summary', '')
             
             description = (
                 f"**Negocio:**\n"
@@ -192,7 +192,7 @@ class SummaryService:
 
             return ExecutiveSummary(
                 issue_key=issue_key,
-                summary=f"Análisis de {issue_key}",
+                summary=scope_summary or f"Análisis de {issue_key}",
                 description=description,
             )
         
@@ -216,7 +216,7 @@ class SummaryService:
 
             return ExecutiveSummary(
                 issue_key=issue_key,
-                summary=summary_text,
+                summary=summary_text or f"Análisis de {issue_key}",
                 description=description,
             )
         
@@ -227,47 +227,103 @@ class SummaryService:
             description="Resumen generado",
         )
 
-    def generate_traceability(
-        self,
-        issue_key: str,
-        analysis_result: Any,  # AnalysisResult model
-    ) -> TraceabilityMatrix:
-        """
-        Genera matriz de trazabilidad desde AnalysisResult.
-        Wrapper compatible con orchestrator.
-        """
+    
+    def generate_traceability(self, issue_key: str, analysis_result: Any) -> ExecutiveSummary:
+        """Genera matriz de trazabilidad AC → Scenario."""
         log.info(f"Generating traceability for {issue_key}")
-
-        matrix = TraceabilityMatrix(issue_key)
-
-        # Extraer business rules con trazabilidad
+        
+        lines = []
+        lines.append(f"# Trazabilidad de Requisitos - {issue_key}")
+        lines.append("")
+        lines.append(f"*Generado: {datetime.now().isoformat()}*")
+        lines.append("")
+        lines.append("## Matriz AC → Scenario → Fuente")
+        lines.append("")
+        lines.append("| AC | Scenario | Línea | Fuente | ID |")
+        lines.append("|---|---|---|---|---|")
+        
+        # ✅ Obtener happy_paths de análisis
         if hasattr(analysis_result, 'raw'):
-            raw = getattr(analysis_result, 'raw', {})
-            business_rules_raw = raw.get("business_rules", []) if isinstance(raw, dict) else []
+            # Es AnalysisResult
+            happy_paths = analysis_result.raw.get("happy_paths", []) or []
+            business_rules = analysis_result.business_rules or []
         else:
-            business_rules_raw = []
+            # Es dict
+            happy_paths = analysis_result.get("raw", {}).get("happy_paths", []) or []
+            business_rules = analysis_result.get("business_rules", []) or []
+        
+        # Mapear AC a happy paths
+        for idx, path in enumerate(happy_paths, 1):
+            scenario_name = path.get("name", f"Escenario {idx}")
+            source = path.get("source", "jira")
+            traceability = path.get("traceability", {})
+            source_id = traceability.get("source_id", "") if isinstance(traceability, dict) else ""
+            
+            # LIMPIAR nombre
+            scenario_name = SummaryService._clean_scenario_name(scenario_name)
+            
+            # Generar ID único
+            trace_id = f"{issue_key}-S{idx}"
+    
+            lines.append(f"| AC{idx} | {scenario_name} | {idx * 10} | {source} | {trace_id} |")
 
-        # Mapear cada regla a su origen
-        for idx, rule_dict in enumerate(business_rules_raw, 1):
-            if isinstance(rule_dict, dict):
-                rule_text = rule_dict.get("rule", "")
-                traceability = rule_dict.get("traceability", {})
-            else:
-                rule_text = str(rule_dict)
-                traceability = {}
+        lines.append("")
+        lines.append("## Cobertura")
+        lines.append("")
+        # ✅ USAR len(happy_paths) en lugar de len(business_rules)
+        total_ac = len(happy_paths)  # ← CAMBIO AQUÍ
+        covered_ac = len(happy_paths)
+        ratio = (covered_ac / total_ac * 100) if total_ac > 0 else 100  # ← Y AQUÍ
+        
+        lines.append(f"- **AC Totales:** {total_ac}")
+        lines.append(f"- **AC Cubiertas:** {covered_ac}")
+        lines.append(f"- **Ratio:** {ratio:.1f}%")
+        lines.append("")
+        
+        lines.append("## Distribución de Fuentes")
+        lines.append("")
+        
+        source_count = {}
+        for path in happy_paths:
+            source = path.get("source", "unknown")
+            source_count[source] = source_count.get(source, 0) + 1
+        
+        for source, count in sorted(source_count.items()):
+            lines.append(f"- **{source.upper()}:** {count} escenarios")
+        
+        # ✅ Retornar ExecutiveSummary con summary y description
+        return ExecutiveSummary(
+            issue_key=issue_key,
+            summary=f"Trazabilidad de {issue_key}",
+            description="\n".join(lines),
+        )
 
-            link = TraceabilityLink(
-                ac_id=f"BR-{idx}",  # Business Rule
-                ac_text=rule_text,
-                scenario_name=f"Scenario BR-{idx}",
-                scenario_line=5 + (idx * 5),
-                source_type=traceability.get("source_type", "jira"),
-                source_id=traceability.get("source_id", issue_key),
-                source_name=traceability.get("source_name", "Issue"),
-            )
-            matrix.add_link(link)
-
-        return matrix
+    @staticmethod
+    def _clean_scenario_name(name: str) -> str:
+        """Limpia el nombre del escenario removiendo fragmentos de pasos."""
+        import re
+        
+        # Remover todo después de palabras clave Gherkin
+        keywords = ["Dado que", "Cuando", "Entonces", "Y ", "Given", "When", "Then", "And"]
+        
+        for keyword in keywords:
+            # Buscar el keyword y truncar
+            idx = name.find(keyword)
+            if idx > 0:
+                # Truncar hasta el keyword y remover espacios extra
+                name = name[:idx].strip()
+        
+        # Remover espacios dobles
+        name = re.sub(r'\s+', ' ', name).strip()
+        
+        # Máximo 80 caracteres
+        name = name[:80].strip()
+        
+        # Asegurar que no esté vacío
+        if not name or len(name) < 3:
+            name = "Escenario"
+        
+        return name
     
     def generate_traceability_matrix(self, issue_key: str, analysis_result: dict[str, Any]) -> TraceabilityMatrix:
         """Genera matriz de trazabilidad."""
@@ -286,16 +342,16 @@ class SummaryService:
             
             # Buscar regla de negocio relacionada
             rule = business_rules_raw[ac_idx - 1] if ac_idx - 1 < len(business_rules_raw) else {}
-            traceability = rule.get("traceability", {})
+            traceability = rule.get("traceability", {}) if isinstance(rule, dict) else {}
 
             link = TraceabilityLink(
                 ac_id=ac_id,
                 ac_text=ac,
                 scenario_name=f"Scenario {ac_idx}",
                 scenario_line=5 + (ac_idx * 5),  # Aproximado
-                source_type=traceability.get("source_type", "jira"),
-                source_id=traceability.get("source_id", issue_key),
-                source_name=traceability.get("source_name", "Issue"),
+                source_type=traceability.get("source_type", "jira") if isinstance(traceability, dict) else "jira",
+                source_id=traceability.get("source_id", issue_key) if isinstance(traceability, dict) else issue_key,
+                source_name=traceability.get("source_name", "Issue") if isinstance(traceability, dict) else "Issue",
             )
             matrix.add_link(link)
 

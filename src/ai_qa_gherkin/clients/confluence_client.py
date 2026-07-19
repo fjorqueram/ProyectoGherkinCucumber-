@@ -42,6 +42,34 @@ class ConfluenceClient:
         return ""  # No se pudo construir la URL
 
     @retry_policy()
+    def get_page_by_id(self, page_id: str) -> ConfluencePage | None:
+        """Obtiene una pagina de Confluence por ID usando el API REST."""
+        url = f"{self.base_url}/rest/api/content/{page_id}"
+        params = {"expand": "body.storage"}
+        log.info(f"Fetching Confluence page by id: {page_id}")
+
+        try:
+            with httpx.Client(auth=self.auth, timeout=self.timeout) as client:
+                r = client.get(url, params=params)
+                if r.status_code == 404:
+                    return None
+                if r.status_code >= 400:
+                    self._handle_http_error(r)
+                data = r.json()
+        except httpx.TimeoutException as e:
+            raise TransientError(f"Confluence request timed out: {e}") from e
+        except httpx.NetworkError as e:
+            raise TransientError(f"Confluence network error: {e}") from e
+
+        content = ((data.get("body", {}) or {}).get("storage", {}) or {}).get("value", "") or ""
+        return ConfluencePage(
+            id=str(data.get("id") or page_id),
+            title=str(data.get("title") or ""),
+            content=content,
+            url=self.build_page_url(data),
+        )
+
+    @retry_policy()
     def search_pages_by_text(self, text: str, limit: int = 5) -> list[ConfluencePage]:
         """
         Busca páginas por texto usando CQL.

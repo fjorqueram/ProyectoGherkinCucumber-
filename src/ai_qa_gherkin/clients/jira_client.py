@@ -154,3 +154,121 @@ class JiraClient:
             links=links,
             raw=data,
         )
+    
+    def get_issue_comments(self, issue_key: str) -> list[dict]:
+        """Obtiene comentarios de un issue."""
+        try:
+            url = f"{self.base_url}/rest/api/3/issue/{issue_key}"
+            params = {"fields": "comment"}
+            
+            log.info(f"Fetching comments for {issue_key}")
+            
+            with httpx.Client(auth=self.auth, timeout=self.timeout) as client:
+                r = client.get(url, params=params)
+                if r.status_code >= 400:
+                    self._handle_http_error(r)
+                
+                issue_data = r.json()
+                comments = issue_data.get('fields', {}).get('comment', {}).get('comments', [])
+                
+                # ✅ CONVERTIR A STRING SI ES NECESARIO
+                result = []
+                for c in comments:
+                    body = c.get('body', '')
+                    
+                    # Si body es dict (ADF), extraer texto
+                    if isinstance(body, dict):
+                        body = self._extract_text_from_adf(body)
+                    
+                    result.append({'body': str(body)})
+                
+                return result
+        except Exception as e:
+            log.warning(f"Failed to get comments for {issue_key}: {e}")
+            return []
+
+    @retry_policy()
+    def get_remote_links(self, issue_key: str) -> list[dict[str, str]]:
+        """Obtiene enlaces remotos asociados a una tarjeta Jira."""
+        url = f"{self.base_url}/rest/api/3/issue/{issue_key}/remotelink"
+        log.info(f"Fetching remote links for {issue_key}")
+
+        try:
+            with httpx.Client(auth=self.auth, timeout=self.timeout) as client:
+                r = client.get(url)
+                if r.status_code >= 400:
+                    self._handle_http_error(r)
+                data = r.json()
+        except httpx.TimeoutException as e:
+            raise TransientError(f"Jira request timed out: {e}") from e
+        except httpx.NetworkError as e:
+            raise TransientError(f"Jira network error: {e}") from e
+
+        links: list[dict[str, str]] = []
+        for item in data if isinstance(data, list) else []:
+            obj = item.get("object", {}) or {}
+            links.append(
+                {
+                    "url": str(obj.get("url") or ""),
+                    "title": str(obj.get("title") or ""),
+                }
+            )
+        return links
+
+    def get_confluence_page(self, page_id: str) -> dict[str, Any] | None:
+        """
+        Obtiene una página de Confluence por ID.
+        
+        Puede recibir:
+        - page_id: "4612161537"
+        - Retorna: dict con page_id, title, content, url
+        """
+        try:
+            log.info(f"Fetching Confluence page {page_id}")
+            
+            # ✅ Construir URL de Confluence API
+            # Formato: https://imed.atlassian.net/wiki/api/v2/pages/{page_id}
+            confluence_url = f"https://imed.atlassian.net/wiki/api/v2/pages/{page_id}"
+            
+            params = {
+                "body-format": "storage"  # Obtener en formato HTML/storage
+            }
+            
+            with httpx.Client(auth=self.auth, timeout=self.timeout) as client:
+                r = client.get(confluence_url, params=params)
+                
+                if r.status_code == 404:
+                    log.warning(f"Confluence page {page_id} not found")
+                    return None
+                
+                if r.status_code >= 400:
+                    log.warning(f"Failed to get Confluence page: {r.status_code}")
+                    return None
+                
+                page_data = r.json()
+                
+                # ✅ Extraer campos relevantes
+                page = {
+                    "page_id": page_id,
+                    "id": page_id,
+                    "title": page_data.get("title", ""),
+                    "content": page_data.get("body", {}).get("storage", {}).get("value", ""),
+                    "url": page_data.get("_links", {}).get("webui", ""),
+                }
+                
+                log.info(f"✓ Fetched Confluence page: {page['title']}")
+                return page
+                
+        except Exception as e:
+            log.warning(f"Failed to get Confluence page {page_id}: {e}")
+            return None
+
+    def search_related_documentation(self, issue_key: str) -> list[dict]:
+        """Busca documentación relacionada a un issue."""
+        try:
+            log.info(f"Searching related documentation for {issue_key}")
+            # Por ahora retorna vacío, se puede mejorar después
+            return []
+        except Exception as e:
+            log.debug(f"Documentation search failed: {e}")
+            return []
