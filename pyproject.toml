@@ -77,3 +77,6 @@ exclude_lines = [
 
 [project.scripts]
 gherkin = "ai_qa_gherkin.cli:cli"
+
+[tool.setuptools.package-data]
+ai_qa_gherkin = ["resources/*.json"]

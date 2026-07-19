@@ -122,6 +122,57 @@ XRAY_CLIENT_SECRET=<client-secret>
 XRAY_TIMEOUT_SECONDS=30
 ```
 
+### Proveedores LLM
+
+El comando `--use-llm` usa `LLM_PROVIDER` para elegir proveedor. Si se solicita IA y el proveedor falla, el pipeline falla explicitamente en vez de generar escenarios con fallback silencioso.
+
+GitHub Models, recomendado cuando la organizacion tiene acceso empresarial a GitHub Models:
+
+```env
+LLM_PROVIDER=github_models
+GITHUB_MODELS_TOKEN=<github_pat_con_models_read>
+GITHUB_MODELS_MODEL=openai/gpt-4.1
+GITHUB_MODELS_ORG=<org-opcional>
+```
+
+Azure OpenAI / Microsoft Foundry:
+
+```env
+LLM_PROVIDER=azure_openai
+AZURE_OPENAI_API_KEY=<azure-key>
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT=<deployment-name>
+AZURE_OPENAI_API_VERSION=2024-10-21
+```
+
+Endpoint compatible con OpenAI, Ollama o LM Studio:
+
+```env
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=https://<endpoint>/v1
+LLM_API_KEY=<api-key>
+LLM_MODEL=<model>
+
+# Local sin cuota externa
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_MODEL=llama3.1
+```
+
+### Reglas de dominio Gherkin
+
+Las reglas de dominio usadas para agrupar `Regla:`, tags funcionales, correcciones de redacciÃ³n, escenarios de permisos/i18n y outlines de extensiones viven en:
+
+```text
+src/ai_qa_gherkin/resources/domain_rules.json
+```
+
+Para usar reglas propias sin tocar cÃ³digo Python, copia ese JSON, ajusta patrones/tags/tÃ­tulos y apunta la variable:
+
+```env
+GHERKIN_DOMAIN_RULES_FILE=C:\ruta\mi-domain-rules.json
+```
+
 > Seguridad: no subir `.env` al repositorio.
 
 ---

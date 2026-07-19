@@ -155,6 +155,24 @@ Característica: Login
         # No debería fallar por Examples
         assert not any(e["rule_id"] == "MISSING_EXAMPLES" for e in result.errors)
 
+    def test_spanish_outline_alias_with_examples(self):
+        gherkin = """Característica: Archivos
+  Regla: Iconos por extensión
+    Esquema del escenario: Mostrar icono segun tipo de archivo
+      Dado que existe un archivo complementario con extensión "<extensión>"
+      Cuando se muestra la tabla de archivos complementarios
+      Entonces se renderiza el icono "<icono>" en la fila del archivo
+
+      Ejemplos:
+        | extensión | icono    |
+        | PDF       | pdf-rojo |
+"""
+        validator = GherkinValidator()
+        result = validator.validate(gherkin)
+
+        assert result.is_valid is True
+        assert not any(e["rule_id"] == "MISSING_EXAMPLES" for e in result.errors)
+
     def test_duplicate_steps(self):
         gherkin = """Característica: Test
   Escenario: Test

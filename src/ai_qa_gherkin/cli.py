@@ -44,15 +44,26 @@ def cli(ctx: click.Context, output_dir: str, use_llm: bool, verbose: bool) -> No
 
 @cli.command()
 @click.argument('issue_key')
-@click.option('--output-dir', default='output', help='Output directory')
+@click.option('--output-dir', default=None, help='Output directory')
 @click.option('--use-llm', is_flag=True, help='Use LLM for analysis')
-def generate(issue_key: str, output_dir: str, use_llm: bool) -> None:
+@click.pass_context
+def generate(
+    ctx: click.Context,
+    issue_key: str,
+    output_dir: str | None,
+    use_llm: bool,
+) -> None:
     """Genera Feature Gherkin desde un issue de Jira."""
     try:
         click.echo(f"\n[*] Generando Feature para {issue_key}...\n")
-        
-        orchestrator = Orchestrator(output_dir=output_dir, use_llm=use_llm)
+
+        effective_output_dir = output_dir or str(ctx.obj.get("output_dir", "output"))
+        effective_use_llm = use_llm or bool(ctx.obj.get("use_llm", False))
+
+        orchestrator = Orchestrator(output_dir=effective_output_dir, use_llm=effective_use_llm)
         result = orchestrator.run_pipeline(issue_key)
+        if result.state == PipelineState.FAILED:
+            raise click.ClickException(result.error or "Pipeline failed")
         
         click.echo(f"✓ Feature generado exitosamente")
         click.echo(f"   Issue: {result.issue_key}")

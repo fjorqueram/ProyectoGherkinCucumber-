@@ -3,7 +3,6 @@ import re
 import html
 from typing import Any
 from dotenv import load_dotenv
-from typing import Any
 from ai_qa_gherkin.logger import get_logger
 from ai_qa_gherkin.models.domain import (ConfluenceContext, GitContext, IssueContext)
 from ai_qa_gherkin.clients.confluence_client import ConfluenceClient
@@ -295,6 +294,16 @@ class ContextCollector:
             )
             if confluence_pages:
                 confluence_data = confluence_pages
+                first_page = (confluence_pages.get("pages") or [{}])[0]
+                confluence_data.update({
+                    "page_id": first_page.get("page_id", ""),
+                    "page_title": first_page.get("title", ""),
+                    "page_url": first_page.get("url", ""),
+                    "content": first_page.get("content", ""),
+                    "user_steps": self._extract_user_steps_from_content(first_page.get("content", "")),
+                })
+                confluence_data["step_count"] = len(confluence_data["user_steps"])
+                confluence_data["all_pages"] = confluence_data["pages"]
                 log.info(f"Found {len(confluence_pages.get('pages', []))} Confluence pages")
             else:
                 log.info("âœ“ No Confluence pages found, continuing...")
@@ -389,10 +398,10 @@ class ContextCollector:
         confluence_pages: list[dict[str, Any]] = []
         seen: set[str] = set()
 
-        def add_page(page: dict[str, Any], source: str) -> None:
+        def add_page(page: dict[str, Any], source: str, require_issue_key: bool = True) -> None:
             page_id = str(page.get("page_id") or page.get("id") or "")
             url = str(page.get("url") or "")
-            if not self._matches_issue_key(page, issue_key):
+            if require_issue_key and not self._matches_issue_key(page, issue_key):
                 log.debug(
                     f"  Skipping Confluence page outside {issue_key}: "
                     f"{page.get('title') or url or page_id}"
@@ -453,8 +462,13 @@ class ContextCollector:
         for query in self._build_confluence_queries(issue_key, jira_issue, search_text):
             log.info(f"[Confluence extra] Searching Confluence by text '{query[:60]}'...")
             try:
+                require_issue_key = query != search_text
                 for page in confluence_client.search_pages_by_text(query, limit=5):
-                    add_page(self._confluence_model_to_dict(page), "confluence_search")
+                    add_page(
+                        self._confluence_model_to_dict(page),
+                        "confluence_search",
+                        require_issue_key=require_issue_key,
+                    )
             except Exception as e:
                 log.debug(f"  Extra Confluence search failed for '{query}': {e}")
 
@@ -600,26 +614,30 @@ class ContextCollector:
         """
         Busca commits en Git vinculados al issue_key.
         """
-        from ai_qa_gherkin.clients.git_client import GitClient
-
         owner, repo = git_repo
-        git_client = GitClient()
 
         commits = []
 
         try:
             # Buscar commits que mencionen el issue_key
-            commits = git_client.search_commits_by_issue_key(owner, repo, issue_key) or []
+            commits = self.git_client.search_commits_by_issue_key(owner, repo, issue_key) or []
             log.info(f"  Found {len(commits)} commits mentioning {issue_key}")
         except Exception as e:
             log.debug(f"  Git search failed: {e}")
 
         if commits:
+            prs = self.git_client.search_prs_by_commit_sha(owner, repo, issue_key) or []
+            commit_dicts = [self._model_to_dict(commit) for commit in commits]
+            pr_dicts = [self._model_to_dict(pr) for pr in prs]
             return {
-                "commits": commits,
-                "commit_count": len(commits),
+                "commits": commit_dicts,
+                "commit_count": len(commit_dicts),
                 "owner": owner,
                 "repo": repo,
+                "prs": pr_dicts,
+                "pr_count": len(pr_dicts),
+                "changed_files": [],
+                "test_scenarios": self._extract_test_scenarios(commit_dicts, []),
             }
 
         return {}

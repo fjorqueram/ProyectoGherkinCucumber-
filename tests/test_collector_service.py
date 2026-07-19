@@ -166,7 +166,7 @@ class TestContextCollector:
         # Assert
         # ✅ CAMBIO: Verificar que retorna dict vacío, no excepción
         assert result == {}
-        
+
     # ===== TESTS DE GIT =====
     
     def test_collect_git_success(self, collector, mock_git_commits, mock_git_prs):
@@ -209,7 +209,7 @@ class TestContextCollector:
         assert len(scenarios) > 0
         assert any("fix" in s.lower() or "bug" in s.lower() for s in scenarios)
         assert any("test" in s.lower() for s in scenarios)
-    
+
     # ===== TESTS INTEGRALES =====
     
     def test_collect_all_sources_success(self, collector, mock_jira_issue, 

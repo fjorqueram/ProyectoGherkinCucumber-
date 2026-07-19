@@ -239,8 +239,8 @@ class SummaryService:
         lines.append("")
         lines.append("## Matriz AC → Scenario → Fuente")
         lines.append("")
-        lines.append("| AC | Scenario | Línea | Fuente | ID |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| AC | Scenario | Línea | Fuente | Generado por | ID |")
+        lines.append("|---|---|---|---|---|---|")
         
         # ✅ Obtener happy_paths de análisis
         if hasattr(analysis_result, 'raw'):
@@ -256,6 +256,7 @@ class SummaryService:
         for idx, path in enumerate(happy_paths, 1):
             scenario_name = path.get("name", f"Escenario {idx}")
             source = path.get("source", "jira")
+            generated_by = path.get("generated_by", "rules")
             traceability = path.get("traceability", {})
             source_id = traceability.get("source_id", "") if isinstance(traceability, dict) else ""
             
@@ -265,7 +266,10 @@ class SummaryService:
             # Generar ID único
             trace_id = f"{issue_key}-S{idx}"
     
-            lines.append(f"| AC{idx} | {scenario_name} | {idx * 10} | {source} | {trace_id} |")
+            lines.append(
+                f"| AC{idx} | {scenario_name} | {idx * 10} | {source} | "
+                f"{generated_by} | {trace_id} |"
+            )
 
         lines.append("")
         lines.append("## Cobertura")

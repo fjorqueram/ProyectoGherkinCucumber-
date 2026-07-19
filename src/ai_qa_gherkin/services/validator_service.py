@@ -59,6 +59,9 @@ class GherkinValidator:
     def __init__(self) -> None:
         self.errors: list[ValidationError] = []
         self.rules = self._initialize_rules()
+        self.scenario_keywords = ("Escenario:", "Scenario:")
+        self.outline_keywords = ("Escenario Esquema:", "Esquema del escenario:", "Scenario Outline:")
+        self.examples_keywords = ("Examples:", "Ejemplos:")
 
     def _initialize_rules(self) -> dict[str, ValidationRule]:
         """Inicializa todas las reglas de validación."""
@@ -181,9 +184,9 @@ class GherkinValidator:
             if stripped.startswith("Característica:") or stripped.startswith("Feature:"):
                 feature_count += 1
                 feature_line = line_num
-            elif stripped.startswith("Escenario:") or stripped.startswith("Scenario:"):
+            elif stripped.startswith(self.scenario_keywords):
                 scenario_count += 1
-            elif stripped.startswith("Escenario Esquema:") or stripped.startswith("Scenario Outline:"):
+            elif stripped.startswith(self.outline_keywords):
                 outline_count += 1
                 # Validar que Outline tenga Examples
                 self._validate_outline_has_examples(lines, line_num) 
@@ -224,10 +227,10 @@ class GherkinValidator:
 
         for line in lines[outline_line:]:
             stripped = line.lstrip()
-            if stripped.startswith("Examples:") or stripped.startswith("Ejemplos:"):
+            if stripped.startswith(self.examples_keywords):
                 has_examples = True
                 break
-            elif stripped.startswith("Escenario:") or stripped.startswith("Scenario:") or stripped.startswith("Escenario Esquema:") or stripped.startswith("Scenario Outline:"):
+            elif stripped.startswith(self.scenario_keywords + self.outline_keywords):
                 break
 
         if not has_examples:
@@ -253,7 +256,7 @@ class GherkinValidator:
                 continue
 
             # Detectar inicio Scenario
-            if stripped.startswith(("Escenario:", "Scenario:")):
+            if stripped.startswith(self.scenario_keywords + self.outline_keywords):
                 # Validar scenario anterior
                 if in_scenario and (not has_when or not has_then):
                     error = ValidationError(
@@ -338,7 +341,7 @@ class GherkinValidator:
                     seen_steps.add(step_normalized)
             
             # Validar nombres de Scenario
-            if stripped.startswith(("Escenario:", "Scenario:")):
+            if stripped.startswith(self.scenario_keywords + self.outline_keywords):
                 name = stripped.split(":", 1)[1].strip()
                 if len(name) < 5 or len(name) > 100:
                     error = ValidationError(

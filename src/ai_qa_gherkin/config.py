@@ -41,9 +41,26 @@ class Settings(BaseSettings):
 
     # LLM
     llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
-    openai_api_key: str = Field(default="OPENAI_API_KEY", alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="OPENAI_MODEL", alias="OPENAI_MODEL")
+    llm_model: str = Field(default="gpt-4o-mini", alias="LLM_MODEL")
+    llm_base_url: str = Field(default="", alias="LLM_BASE_URL")
+    llm_api_key: str = Field(default="", alias="LLM_API_KEY")
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
+    azure_openai_api_key: str = Field(default="", alias="AZURE_OPENAI_API_KEY")
+    azure_openai_endpoint: str = Field(default="", alias="AZURE_OPENAI_ENDPOINT")
+    azure_openai_deployment: str = Field(default="", alias="AZURE_OPENAI_DEPLOYMENT")
+    azure_openai_api_version: str = Field(default="2024-10-21", alias="AZURE_OPENAI_API_VERSION")
+    github_models_token: str = Field(default="", alias="GITHUB_MODELS_TOKEN")
+    github_models_model: str = Field(default="openai/gpt-4.1", alias="GITHUB_MODELS_MODEL")
+    github_models_org: str = Field(default="", alias="GITHUB_MODELS_ORG")
+    github_models_base_url: str = Field(default="https://models.github.ai", alias="GITHUB_MODELS_BASE_URL")
+    ollama_base_url: str = Field(default="http://localhost:11434/v1", alias="OLLAMA_BASE_URL")
+    ollama_model: str = Field(default="llama3.1", alias="OLLAMA_MODEL")
+    lm_studio_base_url: str = Field(default="http://localhost:1234/v1", alias="LM_STUDIO_BASE_URL")
+    lm_studio_model: str = Field(default="local-model", alias="LM_STUDIO_MODEL")
     llm_timeout_seconds: int = Field(default=60, alias="LLM_TIMEOUT_SECONDS")
+    llm_max_tokens: int = Field(default=5000, alias="LLM_MAX_TOKENS")
+    llm_temperature: float = Field(default=0.2, alias="LLM_TEMPERATURE")
 
     # Retry policy
     retry_max_attempts: int = Field(default=3, alias="RETRY_MAX_ATTEMPTS")

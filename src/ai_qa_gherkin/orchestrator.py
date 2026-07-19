@@ -54,6 +54,12 @@ class PipelineResult:
     error: str | None = None
     duration_seconds: float = 0.0
     confidence: float = 0.7  # ← AGREGAR
+    llm_requested: bool = False
+    llm_used: bool = False
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_error: str | None = None
+    llm_scenarios_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Convierte el resultado del pipeline a un diccionario."""
@@ -69,6 +75,12 @@ class PipelineResult:
             "error": self.error,
             "duration_seconds": self.duration_seconds,
             "confidence": self.confidence,  # ← AGREGAR
+            "llm_requested": self.llm_requested,
+            "llm_used": self.llm_used,
+            "llm_provider": self.llm_provider,
+            "llm_model": self.llm_model,
+            "llm_error": self.llm_error,
+            "llm_scenarios_count": self.llm_scenarios_count,
             "validation_result": self.validation_result,
         }
     
@@ -120,6 +132,7 @@ class Orchestrator:
         """
         start_time = datetime.now()
         result = PipelineResult(issue_key=issue_key, state=PipelineState.IDLE)
+        self._apply_llm_metadata(result)
 
         try:
             log.info(f"Starting pipeline for {issue_key}")
@@ -226,6 +239,7 @@ class Orchestrator:
                 raw=analysis_dict.get("raw", {}),
                 confidence=self.analyzer._calculate_confidence(),
             )
+            self._apply_llm_metadata(result)
             
             result.state = PipelineState.ANALYZED
 
@@ -236,6 +250,7 @@ class Orchestrator:
             return result
         
         except Exception as e:
+            self._apply_llm_metadata(result)
             result.state = PipelineState.FAILED
             result.error = f"Analysis failed: {str(e)}"
             log.error(f"Analysis error: {str(e)}")
@@ -390,6 +405,12 @@ class Orchestrator:
                     traceability_path=state_data.get("traceability_path"),
                     context_hash=context_hash,
                     duration_seconds=state_data.get("duration_seconds", 0),
+                    llm_requested=state_data.get("llm_requested", False),
+                    llm_used=state_data.get("llm_used", False),
+                    llm_provider=state_data.get("llm_provider"),
+                    llm_model=state_data.get("llm_model"),
+                    llm_error=state_data.get("llm_error"),
+                    llm_scenarios_count=state_data.get("llm_scenarios_count", 0),
                 )
                 log.info(f"Loaded cached result for {issue_key}")
                 return result
@@ -410,6 +431,15 @@ class Orchestrator:
             log.debug(f"State saved for {result.issue_key}: {state_file}")
         except Exception as e:
             log.warning(f"Failed to save state: {str(e)}")
+
+    def _apply_llm_metadata(self, result: PipelineResult) -> None:
+        metadata = self.analyzer.get_llm_metadata()
+        result.llm_requested = bool(metadata.get("llm_requested"))
+        result.llm_used = bool(metadata.get("llm_used"))
+        result.llm_provider = metadata.get("llm_provider")
+        result.llm_model = metadata.get("llm_model")
+        result.llm_error = metadata.get("llm_error")
+        result.llm_scenarios_count = int(metadata.get("llm_scenarios_count") or 0)
 
     def get_summary(self, result: PipelineResult) -> str:
         """Retorna resumen textual del resultado."""

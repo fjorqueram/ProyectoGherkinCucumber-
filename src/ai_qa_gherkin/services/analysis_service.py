@@ -2,6 +2,7 @@
 import re
 import html
 from dotenv import load_dotenv
+from collections import Counter
 from typing import Any, Literal, cast
 from ai_qa_gherkin.logger import get_logger
 from ai_qa_gherkin.models.domain import (
@@ -13,6 +14,7 @@ from ai_qa_gherkin.models.domain import (
     TraceabilityLink,
 )
 from ai_qa_gherkin.clients.llm_client import LLMClient
+from ai_qa_gherkin.utils.gherkin_text import GherkinText
 
 log = get_logger("analysis_service")
 load_dotenv()
@@ -25,14 +27,23 @@ class AnalysisService:
 
     def __init__(self, use_llm: bool = False) -> None:
         self.use_llm = use_llm
-        try:
-            self.llm_client = LLMClient() if use_llm else None
-            if use_llm:
+        self.llm_requested = use_llm
+        self.llm_used = False
+        self.llm_provider: str | None = None
+        self.llm_model: str | None = None
+        self.llm_error: str | None = None
+        self.llm_scenarios_count = 0
+
+        self.llm_client = None
+        if use_llm:
+            try:
+                self.llm_client = LLMClient()
+                self.llm_provider = self.llm_client.provider
+                self.llm_model = self.llm_client.model
                 log.info("LLMClient initialized successfully")
-        except ValueError as e:
-            log.warning(f"LLMClient initialization failed: {str(e)}, using mock mode")
-            self.use_llm = False
-            self.llm_client = None
+            except ValueError as e:
+                self.llm_error = str(e)
+                raise ValueError(f"--use-llm was requested, but LLMClient initialization failed: {e}") from e
 
         self.business_rules: list[BusinessRule] = []
         self.preconditions: list[Precondition] = []
@@ -46,6 +57,9 @@ class AnalysisService:
         self.preconditions = []
         self.happy_paths = []
         self.error_scenarios = []
+        self.llm_used = False
+        self.llm_error = None
+        self.llm_scenarios_count = 0
 
         # Convertir Pydantic model a dict real
         try:
@@ -82,10 +96,24 @@ class AnalysisService:
         if "git" in issue_data and issue_data.get("git"):
             self._extract_from_git(issue_data.get("git", {}))
 
-        if self.use_llm and self.llm_client:
-            llm_result = self.llm_client.extract_business_rules(issue_data)
-            self._process_llm_result(llm_result, issue_data)
-            self._deduplicate_happy_paths()
+        if self.use_llm:
+            if not self.llm_client:
+                raise ValueError("--use-llm was requested, but LLMClient is not available")
+            try:
+                llm_result = self.llm_client.extract_business_rules(issue_data)
+                self._process_llm_result(llm_result, issue_data)
+            except Exception as e:
+                self.llm_error = str(e)
+                raise ValueError(f"--use-llm was requested, but LLM analysis failed: {e}") from e
+            self._deduplicate_happy_paths(prefer_llm=True)
+            self.llm_scenarios_count = len([
+                hp for hp in self.happy_paths if hp.generated_by == "llm"
+            ])
+            if self.llm_scenarios_count == 0:
+                self.llm_error = "LLM returned no valid scenarios"
+                raise ValueError("--use-llm was requested, but LLM returned no valid scenarios")
+            self._drop_local_paths_covered_by_llm()
+            self.llm_used = True
 
         # Helper para convertir modelos
         def to_dict(obj: Any) -> Any:
@@ -126,6 +154,7 @@ class AnalysisService:
                         "name": hp.name,
                         "steps": hp.steps,
                         "source": hp.source,  # â† AGREGAR source
+                        "generated_by": hp.generated_by,
                         "traceability": to_dict(hp.traceability),
                     }
                     for hp in self.happy_paths
@@ -135,10 +164,13 @@ class AnalysisService:
                         "error_type": es.error_type,
                         "description": es.description,
                         "expected_outcome": es.expected_outcome,
+                        "source": es.source,
+                        "generated_by": es.generated_by,
                         "traceability": to_dict(es.traceability),
                     }
                     for es in self.error_scenarios
                 ],
+                "llm": self.get_llm_metadata(),
             },
         }
 
@@ -294,24 +326,7 @@ class AnalysisService:
 
     def _extract_gherkin_steps(self, scenario_text: str) -> list[str]:
         """Extrae pasos Gherkin de un escenario."""
-        steps = []
-
-        # Primero, reemplaza espacios dobles con newline
-        scenario_text = scenario_text.replace("  ", "\n")
-
-        lines = scenario_text.split("\n")
-
-        for line in lines:
-            line = line.strip()
-
-            # Buscar palabras clave Gherkin al inicio
-            if line and any(line.lower().startswith(kw) for kw in
-                        ["dado", "cuando", "entonces", "y ", "dado que", "cuando ", "entonces "]):
-                # Limpiar espacios extra
-                line = " ".join(line.split())
-                steps.append(line)
-                log.debug(f"  + Step: {line[:80]}")
-
+        steps = GherkinText.extract_steps(scenario_text.replace("  ", "\n"))
         log.debug(f"Extracted {len(steps)} steps from scenario")
         return steps
 
@@ -373,125 +388,41 @@ class AnalysisService:
 
     def _clean_html_simple(self, content: str) -> str:
         """Limpia entidades HTML del contenido."""
-
-        # Decodificar entidades HTML
         content = html.unescape(content)
-
-        # Remover tags HTML
         content = re.sub(r'<[^>]+>', '\n', content)
-
-        # Remover espacios mÃºltiples
-        content = ' '.join(content.split())
-
-        return content
+        return " ".join(content.split())
 
     def _generate_steps_from_confluence(self, content: str) -> list[str]:
         """
         Genera pasos Gherkin automÃ¡ticamente desde contenido de Confluence.
         Si no encuentra pasos explÃ­citos, crea pasos genÃ©ricos.
         """
-        import re
-
-        steps = []
-
         try:
-            # âœ… Estrategia 1: Buscar lÃ­neas con palabras clave Gherkin
-            lines = content.split('\n')
-
-            for line in lines:
-                line = line.strip()
-
-                if not line or len(line) < 10:
-                    continue
-
-                lower_line = line.lower()
-
-                if (lower_line.startswith("dado que ") or
-                    lower_line.startswith("cuando ") or
-                    lower_line.startswith("entonces ") or
-                    lower_line.startswith("y ")):
-
-                    if len(line) > 120:
-                        line = line[:120] + "..."
-
-                    steps.append(line)
-                    log.debug(f"  + Found Gherkin step: {line[:80]}")
-
-            # âœ… Estrategia 2: Si no encontrÃ³, crear pasos genÃ©ricos del contenido
+            steps = GherkinText.extract_steps(content, min_length=10, max_length=120)
             if not steps and content:
-                # Dividir contenido en oraciones/puntos
                 sentences = re.split(r'[\.;:]', content)
                 sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
-
                 if sentences:
-                    # Tomar primeras 3 oraciones como pasos
-                    steps.append(f"Dado que {sentences[0][:80]}")
-
-                    if len(sentences) > 1:
-                        steps.append(f"Cuando {sentences[1][:80]}")
-
-                    if len(sentences) > 2:
-                        steps.append(f"Entonces {sentences[2][:80]}")
-
+                    steps = self._steps_from_sentences(sentences)
                     log.debug(f"  Generated {len(steps)} generic steps from content")
 
-            # âœ… Estrategia 3: Si aÃºn estÃ¡ vacÃ­o, usar pasos mÃ­nimos
             if not steps:
-                steps = [
-                    "Dado que se accede a la funcionalidad",
-                    "Cuando se ejecuta la acciÃ³n",
-                    "Entonces se verifica el resultado"
-                ]
-                log.debug(f"  Using fallback generic steps")
+                steps = GherkinText.fallback_steps()
+                log.debug("  Using fallback generic steps")
 
             log.info(f"Generated {len(steps)} steps from Confluence content")
-
+            return steps
         except Exception as e:
             log.warning(f"Error generating Confluence steps: {e}")
-            # Fallback mÃ­nimo
-            steps = [
-                "Dado que se accede a la funcionalidad",
-                "Cuando se ejecuta la acciÃ³n",
-                "Entonces se verifica el resultado"
-            ]
+            return GherkinText.fallback_steps()
 
-        return steps
-
-    def _extract_steps_from_confluence_content(self, content: str) -> list[str]:
-        """Extrae pasos Gherkin del contenido de Confluence."""
-        steps = []
-
-        try:
-            # Buscar lÃ­neas que empiecen con palabras clave Gherkin
-            lines = content.split('\n')
-
-            for line in lines:
-                line = line.strip()
-
-                if not line:
-                    continue
-
-                # Detectar palabras clave Gherkin (case-insensitive)
-                lower_line = line.lower()
-
-                if (lower_line.startswith("dado que ") or
-                    lower_line.startswith("cuando ") or
-                    lower_line.startswith("entonces ") or
-                    lower_line.startswith("y ")):
-
-                    # âœ… Truncar si es muy largo
-                    if len(line) > 120:
-                        line = line[:120] + "..."
-
-                    steps.append(line)
-                    log.debug(f"  + Confluence step: {line[:80]}")
-
-            log.debug(f"Extracted {len(steps)} steps from Confluence content")
-
-        except Exception as e:
-            log.warning(f"Error extracting Confluence steps: {e}")
-
-        return steps
+    @staticmethod
+    def _steps_from_sentences(sentences: list[str]) -> list[str]:
+        prefixes = ("Dado que", "Cuando", "Entonces")
+        return [
+            f"{prefix} {sentence[:80]}"
+            for prefix, sentence in zip(prefixes, sentences[:3], strict=False)
+        ]
 
     def _extract_from_git(self, git: dict[str, Any], issue_key: str | None = None) -> None:
         """Extrae reglas de negocio desde cambios Git."""
@@ -562,16 +493,83 @@ class AnalysisService:
             return f"Onboarding - {base[:55]}"
         return base[:70]
 
-    def _deduplicate_happy_paths(self) -> None:
-        seen = set()
-        deduped = []
-        for path in self.happy_paths:
-            fingerprint = re.sub(r"\s+", " ", path.name.strip().lower())
-            if fingerprint in seen:
+    def _deduplicate_happy_paths(self, prefer_llm: bool = False) -> None:
+        ordered_paths = sorted(
+            self.happy_paths,
+            key=lambda path: 0 if prefer_llm and path.generated_by == "llm" else 1,
+        )
+        deduped: list[HappyPath] = []
+
+        for path in ordered_paths:
+            if self._has_equivalent_happy_path(path, deduped):
+                log.debug(f"Skipping duplicate scenario after LLM merge: {path.name[:80]}")
                 continue
-            seen.add(fingerprint)
             deduped.append(path)
-        self.happy_paths = deduped
+
+        source_order = {"jira": 0, "confluence": 1, "git": 2}
+        self.happy_paths = sorted(
+            deduped,
+            key=lambda path: (
+                0 if path.generated_by == "llm" else 1,
+                source_order.get(path.source, 9),
+                path.name.lower(),
+            ),
+        )
+
+    def _has_equivalent_happy_path(self, candidate: HappyPath, existing_paths: list[HappyPath]) -> bool:
+        candidate_tokens = GherkinText.scenario_tokens(candidate.name, candidate.steps)
+        candidate_name = self._normalize_scenario_text(candidate.name)
+        for existing in existing_paths:
+            existing_name = self._normalize_scenario_text(existing.name)
+            if candidate_name and candidate_name == existing_name:
+                return True
+            similarity = self._token_similarity(
+                candidate_tokens,
+                GherkinText.scenario_tokens(existing.name, existing.steps),
+            )
+            if similarity >= 0.68:
+                return True
+            if candidate.source == existing.source and similarity >= 0.42:
+                return True
+            if self._shares_core_step(candidate, existing):
+                return True
+        return False
+
+    def _token_similarity(self, left: Counter[str], right: Counter[str]) -> float:
+        if not left or not right:
+            return 0.0
+        intersection = sum((left & right).values())
+        union = sum((left | right).values())
+        return intersection / union if union else 0.0
+
+    def _normalize_scenario_text(self, text: str) -> str:
+        text = re.sub(r"^(given|dado que|dado|when|cuando|then|entonces)\s+", "", text.strip(), flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", text.lower()).strip()
+
+    def _shares_core_step(self, left: HappyPath, right: HappyPath) -> bool:
+        left_steps = {GherkinText.core_step_for_dedupe(step) for step in left.steps}
+        right_steps = {GherkinText.core_step_for_dedupe(step) for step in right.steps}
+        left_steps.discard("")
+        right_steps.discard("")
+        if not left_steps or not right_steps:
+            return False
+        return bool(left_steps & right_steps)
+
+    def _drop_local_paths_covered_by_llm(self) -> None:
+        llm_sources = {
+            path.source for path in self.happy_paths
+            if path.generated_by == "llm" and path.source in {"jira", "confluence", "git"}
+        }
+        if not llm_sources:
+            return
+        before = len(self.happy_paths)
+        self.happy_paths = [
+            path for path in self.happy_paths
+            if path.generated_by == "llm" or path.source not in llm_sources
+        ]
+        dropped = before - len(self.happy_paths)
+        if dropped:
+            log.info(f"Dropped {dropped} local scenarios covered by LLM sources: {sorted(llm_sources)}")
 
     def _count_by_source(self, source: str) -> int:
         return len([hp for hp in self.happy_paths if hp.source == source])
@@ -591,7 +589,7 @@ class AnalysisService:
             "Data validation edge cases",
             "Performance issues with large datasets",
             "Concurrent access conflicts",
-            "Riesgo de regresiÃ³n en flujos relacionados",
+            "Riesgo de regresión en flujos relacionados",
         ]
 
     def _calculate_confidence(self) -> float:
@@ -650,20 +648,17 @@ class AnalysisService:
         for path_data in llm_result.get("happy_paths", []):
             if isinstance(path_data, dict):
                 steps = self._normalize_steps(path_data.get("steps", []))
-                if len(steps) < 2:
+                if len(steps) < 3:
                     continue
                 happy_path = HappyPath(
                     name=str(path_data.get("name") or "Happy Path"),
                     steps=steps,
                     traceability=self._trace_from_llm_path(path_data, trace),
                     source=self._source_from_llm_path(path_data),
+                    generated_by="llm",
                 )
             else:
-                happy_path = HappyPath(
-                    name="Happy Path",
-                    steps=[str(path_data)],
-                    traceability=trace,
-                )
+                continue
             self.happy_paths.append(happy_path)
 
         # Error Scenarios
@@ -674,6 +669,8 @@ class AnalysisService:
                     description=error_data.get("description", ""),
                     expected_outcome=error_data.get("expected_outcome", ""),
                     traceability=trace,
+                    source=self._source_from_llm_path(error_data),
+                    generated_by="llm",
                 )
             else:
                 error_scenario = ErrorScenario(
@@ -681,6 +678,7 @@ class AnalysisService:
                     description=str(error_data),
                     expected_outcome="Error handled gracefully",
                     traceability=trace,
+                    generated_by="llm",
                 )
             self.error_scenarios.append(error_scenario)
 
@@ -715,6 +713,16 @@ class AnalysisService:
             source_name=str(path_data.get("source_name") or default_trace.source_name),
             url=str(path_data.get("source_url") or ""),
         )
+
+    def get_llm_metadata(self) -> dict[str, Any]:
+        return {
+            "llm_requested": self.llm_requested,
+            "llm_used": self.llm_used,
+            "llm_provider": self.llm_provider,
+            "llm_model": self.llm_model,
+            "llm_error": self.llm_error,
+            "llm_scenarios_count": self.llm_scenarios_count,
+        }
 
     def get_summary(self) -> str:
         """Retorna resumen textual del anÃ¡lisis."""

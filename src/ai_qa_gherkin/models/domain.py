@@ -96,6 +96,7 @@ class HappyPath(BaseModel):
     steps: list[str]
     traceability: TraceabilityLink
     source: str = "jira"
+    generated_by: str = "rules"
 
 
 class ErrorScenario(BaseModel):
@@ -105,6 +106,7 @@ class ErrorScenario(BaseModel):
     expected_outcome: str
     traceability: TraceabilityLink
     source: str = "jira"
+    generated_by: str = "rules"
 
 
 class AnalysisResult(BaseModel):

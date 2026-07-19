@@ -4,7 +4,7 @@ Prueba análisis multisource de Jira, Confluence y Git.
 """
 from __future__ import annotations
 import pytest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from ai_qa_gherkin.services.analysis_service import AnalysisService
 from ai_qa_gherkin.models.domain import TraceabilityLink
 
@@ -289,3 +289,192 @@ class TestAnalysisService:
             assert "steps" in hp
             assert "source" in hp
             assert "traceability" in hp
+
+    def test_use_llm_calls_client_and_marks_metadata(self, mock_context_jira_only):
+        """Test: --use-llm llama al cliente y marca escenarios derivados por IA."""
+        llm_payload = {
+            "business_rules": [{"description": "Regla IA", "category": "validation"}],
+            "preconditions": ["Precondicion IA"],
+            "happy_paths": [
+                {
+                    "name": "Given usuario valido When visualiza archivos Then ve acciones",
+                    "steps": [
+                        "Dado que el usuario tiene permisos validos",
+                        "Cuando visualiza la pestana Otros archivos",
+                        "Entonces ve las acciones disponibles",
+                    ],
+                    "source": "jira",
+                    "source_id": "DYF-4275",
+                    "source_name": "Implementar validacion de datos",
+                    "source_url": "",
+                }
+            ],
+            "error_scenarios": [],
+        }
+
+        with patch("ai_qa_gherkin.services.analysis_service.LLMClient") as client_cls:
+            client = Mock()
+            client.provider = "openai"
+            client.model = "test-model"
+            client.extract_business_rules.return_value = llm_payload
+            client_cls.return_value = client
+
+            service = AnalysisService(use_llm=True)
+            result = service.analyze(mock_context_jira_only)
+
+        client.extract_business_rules.assert_called_once()
+        metadata = service.get_llm_metadata()
+        assert metadata["llm_requested"] is True
+        assert metadata["llm_used"] is True
+        assert metadata["llm_provider"] == "openai"
+        assert metadata["llm_model"] == "test-model"
+        assert metadata["llm_scenarios_count"] == 1
+        assert any(
+            path.get("generated_by") == "llm"
+            for path in result["raw"]["happy_paths"]
+        )
+
+    def test_use_llm_init_failure_is_not_silent(self):
+        """Test: si se pide IA y no inicializa, falla sin fallback silencioso."""
+        with patch(
+            "ai_qa_gherkin.services.analysis_service.LLMClient",
+            side_effect=ValueError("OPENAI_API_KEY not configured in .env"),
+        ):
+            with pytest.raises(ValueError, match="--use-llm was requested"):
+                AnalysisService(use_llm=True)
+
+    def test_use_llm_empty_result_fails(self, mock_context_jira_only):
+        """Test: si la IA no aporta escenarios validos, falla."""
+        with patch("ai_qa_gherkin.services.analysis_service.LLMClient") as client_cls:
+            client = Mock()
+            client.provider = "openai"
+            client.model = "test-model"
+            client.extract_business_rules.return_value = {
+                "business_rules": [],
+                "preconditions": [],
+                "happy_paths": [],
+                "error_scenarios": [],
+            }
+            client_cls.return_value = client
+
+            service = AnalysisService(use_llm=True)
+
+            with pytest.raises(ValueError, match="returned no valid scenarios"):
+                service.analyze(mock_context_jira_only)
+
+    def test_use_llm_deduplicates_equivalent_local_scenarios(self, mock_context_jira_only):
+        """Test: escenarios IA equivalentes reemplazan duplicados locales."""
+        llm_payload = {
+            "business_rules": [],
+            "preconditions": [],
+            "happy_paths": [
+                {
+                    "name": "Visualizacion exitosa de la pestana Otros archivos",
+                    "steps": [
+                        "Dado que el usuario tiene permisos de visualizacion sobre la cuenta medica",
+                        "Cuando accede a la seccion 3 Antecedentes y selecciona Otros archivos",
+                        "Entonces se muestra la tabla Archivos complementarios",
+                    ],
+                    "source": "jira",
+                    "source_id": "DYF-4275",
+                    "source_name": "Implementar validacion de datos",
+                    "source_url": "",
+                }
+            ],
+            "error_scenarios": [],
+        }
+
+        with patch("ai_qa_gherkin.services.analysis_service.LLMClient") as client_cls:
+            client = Mock()
+            client.provider = "github_models"
+            client.model = "openai/gpt-4.1"
+            client.extract_business_rules.return_value = llm_payload
+            client_cls.return_value = client
+
+            service = AnalysisService(use_llm=True)
+            result = service.analyze(mock_context_jira_only)
+
+        matching_paths = [
+            path for path in result["raw"]["happy_paths"]
+            if "Visualizaci" in path["name"] or "visualizacion" in path["name"].lower()
+        ]
+        assert len(matching_paths) == 1
+        assert matching_paths[0]["generated_by"] == "llm"
+
+    def test_use_llm_removes_local_duplicate_with_shared_core_steps(self, mock_context_jira_only):
+        """Test: dedupe elimina Jira local cuando IA cubre los mismos pasos clave."""
+        llm_payload = {
+            "business_rules": [],
+            "preconditions": [],
+            "happy_paths": [
+                {
+                    "name": "Estado vacio sin archivos complementarios",
+                    "steps": [
+                        "Dado que no existen archivos complementarios asociados a la cuenta",
+                        "Cuando se carga la pestaña 'Otros archivos'",
+                        "Entonces se muestra un mensaje indicando que no hay archivos disponibles",
+                    ],
+                    "source": "jira",
+                    "source_id": "DYF-4275",
+                    "source_name": "Implementar validacion de datos",
+                    "source_url": "",
+                }
+            ],
+            "error_scenarios": [],
+        }
+
+        with patch("ai_qa_gherkin.services.analysis_service.LLMClient") as client_cls:
+            client = Mock()
+            client.provider = "github_models"
+            client.model = "openai/gpt-4.1"
+            client.extract_business_rules.return_value = llm_payload
+            client_cls.return_value = client
+
+            service = AnalysisService(use_llm=True)
+            result = service.analyze(mock_context_jira_only)
+
+        empty_state_paths = [
+            path for path in result["raw"]["happy_paths"]
+            if any("no hay archivos disponibles" in step.lower() for step in path["steps"])
+        ]
+        assert len(empty_state_paths) == 1
+        assert empty_state_paths[0]["generated_by"] == "llm"
+
+    def test_use_llm_drops_local_confluence_when_llm_covers_confluence(self, mock_context_multisource):
+        """Test: descarta escenarios heurísticos Confluence si IA cubre Confluence."""
+        llm_payload = {
+            "business_rules": [],
+            "preconditions": [],
+            "happy_paths": [
+                {
+                    "name": "Usuario nuevo completa onboarding desde Confluence",
+                    "steps": [
+                        "Dado que el usuario nuevo tiene acceso a la cuenta",
+                        "Cuando completa el flujo documentado en Confluence",
+                        "Entonces visualiza la guía de bienvenida",
+                    ],
+                    "source": "confluence",
+                    "source_id": "123456",
+                    "source_name": "First Time User Guide",
+                    "source_url": "https://confluence.example.com/wiki/pages/123456",
+                }
+            ],
+            "error_scenarios": [],
+        }
+
+        with patch("ai_qa_gherkin.services.analysis_service.LLMClient") as client_cls:
+            client = Mock()
+            client.provider = "github_models"
+            client.model = "openai/gpt-4.1"
+            client.extract_business_rules.return_value = llm_payload
+            client_cls.return_value = client
+
+            service = AnalysisService(use_llm=True)
+            result = service.analyze(mock_context_multisource)
+
+        confluence_paths = [
+            path for path in result["raw"]["happy_paths"]
+            if path["source"] == "confluence"
+        ]
+        assert len(confluence_paths) == 1
+        assert confluence_paths[0]["generated_by"] == "llm"
