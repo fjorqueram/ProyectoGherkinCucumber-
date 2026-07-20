@@ -200,3 +200,51 @@ Misma logica que `save_summary`, pero usa:
 - Los archivos siempre terminan en `.md`, incluso cuando `format` no es Markdown.
 - `coverage_ratio` siempre es 100% si hay links, no mide AC sin cobertura externa.
 - `scenario_line` es aproximado, no calculado desde el archivo Gherkin real.
+
+---
+
+## 12) Actualizacion 2026-07-20: SummaryService actual
+
+`generate_executive_summary` ahora acepta:
+
+- `AnalysisResult` como modelo.
+- `dict` como estructura de tests.
+
+Si recibe modelo, toma:
+
+- `business_rules`
+- `assumptions`
+- `risks`
+- `confidence`
+- `scope_summary`
+
+Si recibe dict con `validation_result`, mantiene el flujo anterior.
+
+### Metodo nuevo `generate_traceability`
+
+Genera una trazabilidad como `ExecutiveSummary`, no como `TraceabilityMatrix`.
+
+Construye Markdown con:
+
+- tabla AC -> Scenario -> Fuente -> Generado por -> ID.
+- cobertura basada en cantidad de happy paths.
+- distribucion de fuentes.
+
+Usa `analysis_result.raw["happy_paths"]` cuando recibe modelo.
+
+### `_clean_scenario_name`
+
+Limpia nombres de scenario removiendo fragmentos de pasos como:
+
+- `Dado que`
+- `Cuando`
+- `Entonces`
+- `Given`
+- `When`
+- `Then`
+
+Tambien limita el nombre a 80 caracteres.
+
+### Compatibilidad
+
+`generate_traceability_matrix` sigue existiendo para tests y flujo anterior.

@@ -1013,3 +1013,68 @@ Y tambien valida errores estructurados:
 ```python
 errors=[{"message": "Invalid Gherkin syntax at line 3"}]
 ```
+
+---
+
+## 20) Actualizacion 2026-07-20: modelos de analisis movidos a domain.py
+
+La version actual de `domain.py` ahora incluye tambien modelos que antes estaban definidos como clases simples dentro de `analysis_service.py`.
+
+Modelos nuevos/actualizados:
+
+- `TraceabilityLink`
+- `BusinessRule`
+- `Precondition`
+- `HappyPath`
+- `ErrorScenario`
+- `PipelineResult`
+
+### `TraceabilityLink`
+
+Modelo Pydantic con:
+
+- `source_type`: restringido a `jira`, `confluence`, `git`, `llm`.
+- `source_id`: obligatorio.
+- `source_name`: nombre de fuente.
+- `url`: URL opcional.
+
+### `BusinessRule`
+
+Regla de negocio con:
+
+- `rule`
+- `category`: `general`, `validation`, `permission`, `performance`.
+- `traceability`
+- `priority`
+
+### `HappyPath`
+
+Ahora incluye:
+
+- `source`: fuente original.
+- `generated_by`: `rules`, `llm`, `fallback`, etc.
+
+Esto permite saber si un escenario viene de Jira, Confluence, Git o LLM.
+
+### `ErrorScenario`
+
+Tambien incluye:
+
+- `source`
+- `generated_by`
+
+### `PipelineResult`
+
+Modelo Pydantic separado del dataclass `PipelineResult` de `orchestrator.py`.
+
+Campos:
+
+- rutas de feature, summary, trazabilidad y estado.
+- `confidence`
+- `success`
+- `message`
+- `generated_at`
+
+Punto de cuidado:
+
+Existen dos conceptos llamados `PipelineResult`: uno en `domain.py` y otro dataclass en `orchestrator.py`.

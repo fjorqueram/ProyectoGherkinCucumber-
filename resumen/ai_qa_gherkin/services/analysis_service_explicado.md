@@ -1489,6 +1489,101 @@ Para `error_scenarios`, acepta:
 AnalysisService(use_llm=False)
 ```
 
+---
+
+## 36) Actualizacion 2026-07-20: AnalysisService actual
+
+La version actual ya no define localmente `BusinessRule`, `HappyPath`, `ErrorScenario`, `Precondition` ni `TraceabilityLink`.
+
+Ahora los importa desde:
+
+```python
+from ai_qa_gherkin.models.domain import (...)
+```
+
+### Constructor actual
+
+```python
+def __init__(self, use_llm: bool = False) -> None:
+```
+
+El default ahora es `False`, por lo que no usa LLM salvo que se pida explicitamente.
+
+Guarda metadata auditable:
+
+- `llm_requested`
+- `llm_used`
+- `llm_provider`
+- `llm_model`
+- `llm_error`
+- `llm_scenarios_count`
+
+### `analyze`
+
+Ahora recibe:
+
+```python
+issue: JiraIssue | dict[str, Any]
+```
+
+Devuelve un `dict[str, Any]`, no un `AnalysisResult` directamente.
+
+El resultado incluye:
+
+- `issue_key`
+- `scope_summary`
+- `business_rules` como dicts con regla, categoria y trazabilidad.
+- `preconditions`
+- `raw.happy_paths`
+- `raw.error_scenarios`
+- `raw.llm`
+
+### Extraccion desde Jira
+
+`_extract_from_issue` ahora procesa acceptance criteria como texto, divide por:
+
+```regex
+Escenario\s+\d+:
+```
+
+Luego extrae pasos Gherkin con `GherkinText.extract_steps`.
+
+Si no logra extraer escenarios, crea fallback con `GherkinText.fallback_steps()`.
+
+### Extraccion desde Confluence
+
+`_extract_from_confluence` limpia HTML, usa `user_steps` si existen y si no genera pasos desde contenido.
+
+Cada scenario conserva:
+
+- source `confluence`
+- trazabilidad con page id, titulo y URL.
+
+### Extraccion desde Git
+
+Detecta archivos de test, boundary testing y `test_scenarios`.
+
+Puede crear happy paths de regresion Git.
+
+### LLM
+
+Si `use_llm=True`, procesa respuesta LLM y exige al menos un happy path valido generado por LLM.
+
+Si el LLM no entrega escenarios validos, lanza `ValueError`.
+
+### Deduplicacion
+
+Incluye logica para:
+
+- preferir escenarios LLM.
+- eliminar fallbacks si LLM funciono.
+- eliminar escenarios locales cubiertos por LLM.
+- deduplicar por similitud de tokens y pasos core.
+
+### Metadata
+
+`get_llm_metadata()` devuelve un diccionario listo para auditoria en el orquestador.
+
 Esto mantiene pruebas deterministicas sin depender de red, API keys ni OpenAI.
 
 Tambien prueba directamente:

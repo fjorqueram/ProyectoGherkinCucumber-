@@ -156,3 +156,56 @@ Usa:
 - `MagicMock`
 
 Esto evita llamadas reales a OpenAI durante el test.
+
+---
+
+## 10) Actualizacion 2026-07-20: tests nuevos detectados
+
+### `test_orchestrator_service.py`
+
+Prueba piezas del orquestador.
+
+Cubre:
+
+- inicializacion de `Orchestrator`.
+- serializacion de metadata LLM en `PipelineResult`.
+- serializacion de `collection_summary` para auditoria.
+
+Varios tests estan declarados con docstring pero sin cuerpo todavia, por ejemplo:
+
+- `test_run_minimal_context`
+- `test_run_full_context`
+- `test_idempotence`
+- `test_files_exist`
+
+Eso significa que aun son placeholders.
+
+### `test_domain_rules.py`
+
+Valida que `GherkinService` pueda usar reglas externas mediante `DomainRules`.
+
+Cubre:
+
+- perfil de feature personalizado.
+- titulo configurable.
+- tags configurables.
+- mapeo de regla por palabra clave.
+
+Comprueba que el Gherkin resultante incluya:
+
+- `Caracteristica: Autenticacion de usuarios`
+- tags `@regression @login @web @autenticacion`
+- `Regla: Autenticacion`
+
+### `test_text_cleaner.py`
+
+Valida `TextCleaner`.
+
+Cubre:
+
+- reparacion de mojibake.
+- reparacion de doble mojibake.
+- preservacion de saltos e indentacion Gherkin.
+- no reescritura semantica de palabras validas.
+
+Este test confirma que `TextCleaner.clean()` corrige encoding sin inventar cambios de contenido.

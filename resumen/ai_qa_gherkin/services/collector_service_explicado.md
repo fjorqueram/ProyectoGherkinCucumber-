@@ -1468,3 +1468,81 @@ Los metodos principales son:
 - `merge_contexts`
 
 La idea central es preparar informacion limpia y estructurada para que otros servicios puedan analizarla, generar Gherkin o publicarla con mejor trazabilidad.
+
+---
+
+## 20) Actualizacion 2026-07-20: recoleccion real multisource
+
+La version actual de `collector_service.py` ya no solo normaliza diccionarios recibidos.
+
+Ahora `ContextCollector.__init__` instancia:
+
+- `JiraClient`
+- `ConfluenceClient`
+- `GitClient`
+
+Tambien carga `.env` con `load_dotenv()`.
+
+### Metodo nuevo `collect`
+
+Firma:
+
+```python
+def collect(
+    self,
+    issue_key: str,
+    confluence_search: str = "",
+    git_repo: tuple[str, str] | list[tuple[str, str]] | None = None,
+    confluence_search_text: str | None = None,
+) -> dict[str, Any]:
+```
+
+Flujo:
+
+1. Obtiene issue desde Jira con `jira_client.get_issue`.
+2. Normaliza issue.
+3. Busca paginas Confluence con tres estrategias.
+4. Busca evidencia Git si recibe repositorio.
+5. Devuelve contexto con `issue`, `confluence`, `git`, `issue_key`.
+
+### Estrategias Confluence
+
+`_find_confluence_pages` busca:
+
+1. links vinculados a la tarjeta Jira.
+2. URLs en comentarios Jira.
+3. busqueda Confluence por issue key.
+4. busquedas extra por summary o texto recibido.
+
+Deduplica paginas por page id o URL.
+
+### Evidencia Git
+
+`_find_git_evidence` busca:
+
+- PRs por issue key.
+- branches por issue key.
+- commits por issue key.
+- archivos de PR.
+- comparaciones de ramas contra base branch.
+
+Puede devolver estados:
+
+- `found`
+- `not_found`
+- `degraded`
+
+### Seguridad
+
+Los errores Git se sanitizan con:
+
+```python
+_sanitize_error(error)
+```
+
+que limita a una linea y 160 caracteres.
+
+### Puntos de cuidado
+
+- `labels` se siguen calculando en `collect_issue_context`, pero no se exponen en `IssueContext`.
+- El metodo `collect` captura excepciones y continua; esto favorece resiliencia, pero puede ocultar fallas si no se revisan logs.

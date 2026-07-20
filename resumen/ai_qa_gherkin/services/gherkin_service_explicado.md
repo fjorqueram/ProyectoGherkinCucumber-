@@ -1538,3 +1538,93 @@ El flujo principal es:
 8. Devolver un `GeneratedFeature`.
 
 La idea central es convertir analisis funcional en una feature Cucumber/Xray lista para revisar, guardar o publicar.
+
+---
+
+## 26) Actualizacion 2026-07-20: generacion con DomainRules
+
+La version actual de `gherkin_service.py` cambio bastante.
+
+Ya no usa las clases `GherkinScenario` y `GherkinFeature` simples del resumen anterior.
+
+Ahora usa:
+
+- `RenderScenario` como dataclass congelada.
+- `DomainRules` para reglas configurables.
+- `GherkinText` para normalizar/deduplicar pasos.
+- `TextCleaner` para limpiar mojibake y espacios.
+
+### `RenderScenario`
+
+Campos:
+
+- `rule`: nombre de `Regla:`.
+- `name`: nombre de escenario.
+- `steps`: pasos Gherkin.
+- `tags`: tags del escenario.
+
+### Constructor actual
+
+```python
+def __init__(self, domain_rules: DomainRules | None = None) -> None:
+```
+
+Si no recibe reglas, carga `DomainRules()` por defecto.
+
+### `generate_from_analysis`
+
+Lee:
+
+- `issue_key`
+- `raw.happy_paths`
+- `raw.error_scenarios`
+- `scope_summary`
+
+Filtra happy paths que mencionan otra issue key con `_has_foreign_issue_key`.
+
+Agrupa escenarios por regla y genera bloques:
+
+```gherkin
+Regla: <nombre>
+```
+
+### Deduplicacion
+
+Deduplica scenarios por:
+
+- regla + nombre normalizado.
+- equivalencia de pasos core.
+- similitud de tokens.
+- mismo resultado verificable.
+
+### Scenario outline de extensiones
+
+Si la regla coincide con `extension_rule_name`, genera:
+
+```gherkin
+Esquema del escenario
+Ejemplos:
+```
+
+usando datos desde `domain_rules.json`.
+
+### Tags y reglas
+
+Los tags y reglas vienen desde `DomainRules`:
+
+- `feature_tags`
+- `rule_for`
+- `tags_for`
+
+### Limpieza final
+
+Antes de devolver `GeneratedFeature`, limpia todo con:
+
+```python
+TextCleaner.clean(...)
+```
+
+### Puntos de cuidado
+
+- El resumen anterior de `GherkinScenario`/`GherkinFeature` describe una version anterior.
+- Los tests actuales (`test_domain_rules.py`) validan esta nueva integracion configurable.
