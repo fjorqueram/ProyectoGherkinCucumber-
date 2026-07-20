@@ -105,6 +105,7 @@ class AnalysisService:
             except Exception as e:
                 self.llm_error = str(e)
                 raise ValueError(f"--use-llm was requested, but LLM analysis failed: {e}") from e
+            self._drop_local_fallbacks_when_llm_succeeds()
             self._deduplicate_happy_paths(prefer_llm=True)
             self.llm_scenarios_count = len([
                 hp for hp in self.happy_paths if hp.generated_by == "llm"
@@ -317,10 +318,11 @@ class AnalysisService:
         if not self.happy_paths and summary:
             log.warning("No happy paths found, using fallback")
             happy_path = HappyPath(
-                name=f"Happy path for {summary}",
-                steps=["User initiates", "System processes", "Result returned"],
+                name=f"Validar flujo principal de {summary}",
+                steps=GherkinText.fallback_steps(),
                 traceability=trace,
-                source="jira",  # âœ… AGREGAR source
+                source="jira",
+                generated_by="fallback",
             )
             self.happy_paths.append(happy_path)
 
@@ -570,6 +572,18 @@ class AnalysisService:
         dropped = before - len(self.happy_paths)
         if dropped:
             log.info(f"Dropped {dropped} local scenarios covered by LLM sources: {sorted(llm_sources)}")
+
+    def _drop_local_fallbacks_when_llm_succeeds(self) -> None:
+        if not any(path.generated_by == "llm" for path in self.happy_paths):
+            return
+        before = len(self.happy_paths)
+        self.happy_paths = [
+            path for path in self.happy_paths
+            if path.generated_by != "fallback"
+        ]
+        dropped = before - len(self.happy_paths)
+        if dropped:
+            log.info(f"Dropped {dropped} generic fallback scenarios after successful LLM generation")
 
     def _count_by_source(self, source: str) -> int:
         return len([hp for hp in self.happy_paths if hp.source == source])

@@ -158,10 +158,10 @@ class GherkinService:
     def _functional_tags(self, name: str, steps: list[str]) -> list[str]:
         return self.domain_rules.tags_for(" ".join([name, *steps]))
 
-    @staticmethod
-    def _dedupe_render_scenarios(scenarios: list[RenderScenario]) -> list[RenderScenario]:
+    @classmethod
+    def _dedupe_render_scenarios(cls, scenarios: list[RenderScenario]) -> list[RenderScenario]:
         seen: set[tuple[str, str]] = set()
-        result = []
+        result: list[RenderScenario] = []
         for scenario in scenarios:
             fingerprint = (
                 scenario.rule,
@@ -169,12 +169,65 @@ class GherkinService:
             )
             if fingerprint in seen:
                 continue
+            if any(cls._equivalent_render_scenario(scenario, existing) for existing in result):
+                log.debug(f"Skipping equivalent rendered scenario: {scenario.name[:80]}")
+                continue
             seen.add(fingerprint)
             result.append(scenario)
         return result
 
+    @classmethod
+    def _equivalent_render_scenario(cls, left: RenderScenario, right: RenderScenario) -> bool:
+        if left.rule != right.rule:
+            return False
+
+        left_steps = {GherkinText.core_step_for_dedupe(step) for step in left.steps}
+        right_steps = {GherkinText.core_step_for_dedupe(step) for step in right.steps}
+        left_steps.discard("")
+        right_steps.discard("")
+        if left_steps & right_steps:
+            return True
+
+        left_tokens = GherkinText.scenario_tokens(left.name, left.steps)
+        right_tokens = GherkinText.scenario_tokens(right.name, right.steps)
+        if not left_tokens or not right_tokens:
+            return False
+
+        intersection = sum((left_tokens & right_tokens).values())
+        union = sum((left_tokens | right_tokens).values())
+        similarity = intersection / union if union else 0.0
+        return similarity >= 0.25 and cls._same_verifiable_outcome(left.steps, right.steps)
+
+    @staticmethod
+    def _same_verifiable_outcome(left_steps: list[str], right_steps: list[str]) -> bool:
+        left_then = GherkinService._first_step_body(left_steps, ("Entonces", "Then"))
+        right_then = GherkinService._first_step_body(right_steps, ("Entonces", "Then"))
+        if not left_then or not right_then:
+            return False
+        left_tokens = set(GherkinText.scenario_tokens("", [left_then]))
+        right_tokens = set(GherkinText.scenario_tokens("", [right_then]))
+        if not left_tokens or not right_tokens:
+            return False
+        return len(left_tokens & right_tokens) / len(left_tokens | right_tokens) >= 0.50
+
     def _polish_steps(self, steps: list[str]) -> list[str]:
-        return [self._polish_text(str(step)) for step in steps if str(step).strip()]
+        polished = [self._polish_text(str(step)) for step in steps if str(step).strip()]
+        return self._ensure_gherkin_steps(polished)
+
+    @staticmethod
+    def _ensure_gherkin_steps(steps: list[str]) -> list[str]:
+        if all(GherkinText.is_step_line(step) for step in steps):
+            return steps
+
+        keywords = ["Dado que", "Cuando", "Entonces"]
+        coerced = []
+        for idx, step in enumerate(steps[:3]):
+            if GherkinText.is_step_line(step):
+                coerced.append(step)
+                continue
+            keyword = keywords[min(idx, len(keywords) - 1)]
+            coerced.append(f"{keyword} {step.strip()}")
+        return coerced or GherkinText.fallback_steps()
 
     def _polish_text(self, text: str) -> str:
         result = GherkinText.normalize_spaces(text).rstrip(" .")

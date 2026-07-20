@@ -8,6 +8,8 @@ from ai_qa_gherkin.models.domain import (ConfluenceContext, GitContext, IssueCon
 from ai_qa_gherkin.clients.confluence_client import ConfluenceClient
 from ai_qa_gherkin.clients.jira_client import JiraClient
 from ai_qa_gherkin.clients.git_client import GitClient
+from ai_qa_gherkin.config import settings
+from ai_qa_gherkin.retry import PermanentError
 
 log = get_logger("collector_service")
 load_dotenv()
@@ -238,7 +240,7 @@ class ContextCollector:
         self,
         issue_key: str,
         confluence_search: str = "",
-        git_repo: tuple[str, str] | None = None,
+        git_repo: tuple[str, str] | list[tuple[str, str]] | None = None,
         confluence_search_text: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -365,28 +367,15 @@ class ContextCollector:
             "issue_key": issue_key,
         }
 
-    def _collect_git(self, issue_key: str, git_repo: tuple[str, str]) -> dict[str, Any]:
+    def _collect_git(
+        self,
+        issue_key: str,
+        git_repo: tuple[str, str] | list[tuple[str, str]],
+    ) -> dict[str, Any]:
         """Compatibilidad: recolecta commits/PRs relacionados al issue."""
-        owner, repo = git_repo
-        commits = self.git_client.search_commits_by_issue_key(owner, repo, issue_key) or []
-        prs = []
-        if commits:
-            prs = self.git_client.search_prs_by_commit_sha(owner, repo, issue_key) or []
-
-        commit_dicts = [self._model_to_dict(commit) for commit in commits]
-        pr_dicts = [self._model_to_dict(pr) for pr in prs]
-        changed_files: list[str] = []
-
-        return {
-            "owner": owner,
-            "repo": repo,
-            "commits": commit_dicts,
-            "commit_count": len(commit_dicts),
-            "prs": pr_dicts,
-            "pr_count": len(pr_dicts),
-            "changed_files": changed_files,
-            "test_scenarios": self._extract_test_scenarios(commit_dicts, changed_files),
-        }
+        if isinstance(git_repo, list):
+            return self._find_git_evidence_in_repos(git_repo, issue_key)
+        return self._find_git_evidence(git_repo, issue_key)
 
     def _find_confluence_pages(self, jira_client, confluence_client, issue_key: str, jira_issue=None, search_text: str = "") -> dict[str, Any]:
         """
@@ -502,7 +491,7 @@ class ContextCollector:
             str(page.get(field, "") or "")
             for field in ("page_id", "id", "title", "url", "content")
         )
-        return re.search(rf"(?<![A-Z0-9-]){re.escape(issue_key)}(?![A-Z0-9-])", haystack, re.IGNORECASE) is not None
+        return re.search(rf"(?<![A-Z0-9]){re.escape(issue_key)}(?!\d)", haystack, re.IGNORECASE) is not None
 
     def _search_confluence_in_issue_links(self, jira_client, issue_key: str, jira_issue) -> list[dict[str, Any]]:
         """Busca links de Confluence vinculados a la tarjeta Jira."""
@@ -610,37 +599,194 @@ class ContextCollector:
 
         return page_ids
 
-    def _find_git_commits(self, git_repo: tuple[str, str], issue_key: str) -> dict[str, Any]:
+    def _find_git_commits(
+        self,
+        git_repo: tuple[str, str] | list[tuple[str, str]],
+        issue_key: str,
+    ) -> dict[str, Any]:
         """
         Busca commits en Git vinculados al issue_key.
         """
-        owner, repo = git_repo
+        if isinstance(git_repo, list):
+            return self._find_git_evidence_in_repos(git_repo, issue_key)
+        return self._find_git_evidence(git_repo, issue_key)
 
+    def _find_git_evidence_in_repos(
+        self,
+        git_repos: list[tuple[str, str]],
+        issue_key: str,
+    ) -> dict[str, Any]:
+        results = [self._find_git_evidence(repo, issue_key) for repo in git_repos]
+        found_results = [result for result in results if result.get("status") == "found"]
+
+        combined: dict[str, Any] = {
+            "status": "found" if found_results else ("degraded" if any(r.get("errors") for r in results) else "not_found"),
+            "search_key": issue_key,
+            "repositories": [
+                {
+                    "owner": result.get("owner"),
+                    "repo": result.get("repo"),
+                    "status": result.get("status"),
+                    "errors": result.get("errors", []),
+                }
+                for result in results
+            ],
+            "owner": git_repos[0][0] if git_repos else "",
+            "repo": ",".join(repo for _, repo in git_repos),
+            "base_branch": settings.git_base_branch,
+            "branches": self._dedupe_dicts(
+                [item for result in results for item in result.get("branches", [])],
+                "name",
+            ),
+            "prs": self._dedupe_dicts(
+                [item for result in results for item in result.get("prs", [])],
+                "url",
+            ),
+            "commits": self._dedupe_dicts(
+                [item for result in results for item in result.get("commits", [])],
+                "sha",
+            ),
+            "files": self._dedupe_dicts(
+                [item for result in results for item in result.get("files", [])],
+                "filename",
+            ),
+            "errors": [error for result in results for error in result.get("errors", [])],
+        }
+        combined["branch_count"] = len(combined["branches"])
+        combined["pr_count"] = len(combined["prs"])
+        combined["commit_count"] = len(combined["commits"])
+        combined["changed_files"] = [
+            item["filename"] for item in combined["files"] if item.get("filename")
+        ]
+        combined["diff_summary"] = self._build_git_diff_summary(
+            combined["commits"],
+            combined["files"],
+        )
+        combined["test_scenarios"] = self._extract_test_scenarios(
+            combined["commits"],
+            combined["changed_files"],
+        )
+        return combined
+
+    def _find_git_evidence(self, git_repo: tuple[str, str], issue_key: str) -> dict[str, Any]:
+        """Busca evidencia Git por issue_key sin depender de links de Jira."""
+        owner, repo = git_repo
+        base_branch = settings.git_base_branch
+
+        evidence: dict[str, Any] = {
+            "status": "not_found",
+            "search_key": issue_key,
+            "owner": owner,
+            "repo": repo,
+            "base_branch": base_branch,
+            "branches": [],
+            "prs": [],
+            "commits": [],
+            "changed_files": [],
+            "files": [],
+            "diff_summary": "",
+            "test_scenarios": [],
+            "errors": [],
+        }
+
+        branches: list[dict[str, Any]] = []
+        prs = []
         commits = []
+        files: list[dict[str, Any]] = []
+
+        log.info(f"[Git] Searching evidence for {issue_key} in {owner}/{repo}")
+        try:
+            prs = [
+                pr for pr in (self.git_client.search_prs_by_issue_key(owner, repo, issue_key) or [])
+                if self._git_item_matches_issue(pr, issue_key)
+            ]
+            log.info(f"  Found {len(prs)} PRs mentioning {issue_key}")
+        except PermanentError as e:
+            evidence["errors"].append(f"pr_search: {self._sanitize_error(e)}")
+            log.warning(f"  Git PR search unavailable for {owner}/{repo}: {self._sanitize_error(e)}")
+        except Exception as e:
+            evidence["errors"].append(f"pr_search: {self._sanitize_error(e)}")
+            log.debug(f"  Git PR search failed: {e}")
 
         try:
-            # Buscar commits que mencionen el issue_key
-            commits = self.git_client.search_commits_by_issue_key(owner, repo, issue_key) or []
-            log.info(f"  Found {len(commits)} commits mentioning {issue_key}")
+            branches = [
+                branch for branch in (self.git_client.search_branches_by_issue_key(owner, repo, issue_key) or [])
+                if self._git_item_matches_issue(branch, issue_key)
+            ]
+            log.info(f"  Found {len(branches)} branches mentioning {issue_key}")
+        except PermanentError as e:
+            evidence["errors"].append(f"branch_search: {self._sanitize_error(e)}")
+            log.warning(f"  Git branch search unavailable for {owner}/{repo}: {self._sanitize_error(e)}")
         except Exception as e:
-            log.debug(f"  Git search failed: {e}")
+            evidence["errors"].append(f"branch_search: {self._sanitize_error(e)}")
+            log.debug(f"  Git branch search failed: {e}")
 
-        if commits:
-            prs = self.git_client.search_prs_by_commit_sha(owner, repo, issue_key) or []
-            commit_dicts = [self._model_to_dict(commit) for commit in commits]
-            pr_dicts = [self._model_to_dict(pr) for pr in prs]
-            return {
-                "commits": commit_dicts,
-                "commit_count": len(commit_dicts),
-                "owner": owner,
-                "repo": repo,
-                "prs": pr_dicts,
-                "pr_count": len(pr_dicts),
-                "changed_files": [],
-                "test_scenarios": self._extract_test_scenarios(commit_dicts, []),
-            }
+        try:
+            commits = [
+                commit for commit in (self.git_client.search_commits_by_issue_key(owner, repo, issue_key) or [])
+                if self._git_item_matches_issue(commit, issue_key)
+            ]
+            log.info(f"  Found {len(commits)} commits mentioning {issue_key}")
+        except PermanentError as e:
+            evidence["errors"].append(f"commit_search: {self._sanitize_error(e)}")
+            log.warning(f"  Git commit search unavailable for {owner}/{repo}: {self._sanitize_error(e)}")
+        except Exception as e:
+            evidence["errors"].append(f"commit_search: {self._sanitize_error(e)}")
+            log.debug(f"  Git commit search failed: {e}")
 
-        return {}
+        for pr in prs:
+            try:
+                files.extend(self.git_client.get_pr_files(owner, repo, pr.id) or [])
+            except PermanentError as e:
+                evidence["errors"].append(f"pr_files:{pr.id}: {self._sanitize_error(e)}")
+                log.warning(f"  Git PR files unavailable for {owner}/{repo}#{pr.id}: {self._sanitize_error(e)}")
+            except Exception as e:
+                evidence["errors"].append(f"pr_files:{pr.id}: {self._sanitize_error(e)}")
+                log.debug(f"  Git PR files lookup failed for PR {pr.id}: {e}")
+
+        compare_commits: list[dict[str, Any]] = []
+        for branch in branches:
+            branch_name = branch.get("name", "")
+            if not branch_name:
+                continue
+            try:
+                comparison = self.git_client.compare_branch(owner, repo, base_branch, branch_name)
+                files.extend(comparison.get("files", []))
+                compare_commits.extend(comparison.get("commits", []))
+            except PermanentError as e:
+                evidence["errors"].append(f"compare:{branch_name}: {self._sanitize_error(e)}")
+                log.warning(f"  Git compare unavailable for {owner}/{repo}:{branch_name}: {self._sanitize_error(e)}")
+            except Exception as e:
+                evidence["errors"].append(f"compare:{branch_name}: {self._sanitize_error(e)}")
+                log.debug(f"  Git branch compare failed for {branch_name}: {e}")
+
+        commit_dicts = [self._model_to_dict(commit) for commit in commits]
+        commit_dicts.extend(compare_commits)
+        commit_dicts = self._dedupe_dicts(commit_dicts, "sha")
+
+        pr_dicts = [self._model_to_dict(pr) for pr in prs]
+        file_dicts = self._dedupe_dicts(files, "filename")
+        changed_files = [file_item["filename"] for file_item in file_dicts if file_item.get("filename")]
+
+        evidence.update({
+            "branches": branches,
+            "branch_count": len(branches),
+            "prs": pr_dicts,
+            "pr_count": len(pr_dicts),
+            "commits": commit_dicts,
+            "commit_count": len(commit_dicts),
+            "files": file_dicts,
+            "changed_files": changed_files,
+            "diff_summary": self._build_git_diff_summary(commit_dicts, file_dicts),
+            "test_scenarios": self._extract_test_scenarios(commit_dicts, changed_files),
+        })
+
+        if pr_dicts or branches or commit_dicts or file_dicts:
+            evidence["status"] = "found"
+        elif evidence["errors"]:
+            evidence["status"] = "degraded"
+
+        return evidence
 
     def _extract_confluence_page_id(self, link: str | dict) -> str | None:
         """Extrae page_id de un link de Confluence."""
@@ -780,3 +926,50 @@ class ContextCollector:
     def _combine_acceptance_criteria(self, issue: dict[str, Any]) -> list[str]:
         """Combina criterios de aceptaciÃ³n."""
         return issue.get("acceptance_criteria", [])
+
+    @staticmethod
+    def _sanitize_error(error: Exception) -> str:
+        return str(error).splitlines()[0][:160]
+
+    def _git_item_matches_issue(self, item: Any, issue_key: str) -> bool:
+        data = self._model_to_dict(item)
+        haystack = " ".join(
+            str(data.get(field, "") or "")
+            for field in ("name", "title", "message", "url", "sha")
+        )
+        return re.search(rf"(?<![A-Z0-9]){re.escape(issue_key)}(?!\d)", haystack, re.IGNORECASE) is not None
+
+    @staticmethod
+    def _dedupe_dicts(items: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+        seen = set()
+        result = []
+        for item in items:
+            fingerprint = str(item.get(key, "") or item)
+            if fingerprint and fingerprint not in seen:
+                seen.add(fingerprint)
+                result.append(item)
+        return result
+
+    def _build_git_diff_summary(
+        self,
+        commits: list[dict[str, Any]],
+        files: list[dict[str, Any]],
+    ) -> str:
+        parts = []
+        if commits:
+            messages = [
+                str(commit.get("message", "")).splitlines()[0]
+                for commit in commits[:5]
+                if commit.get("message")
+            ]
+            if messages:
+                parts.append("Commits: " + " | ".join(messages))
+        if files:
+            changed = [
+                f"{item.get('filename')} ({item.get('status', 'modified')}, {item.get('changes', 0)} cambios)"
+                for item in files[:10]
+                if item.get("filename")
+            ]
+            if changed:
+                parts.append("Archivos: " + " | ".join(changed))
+        return self.normalizer.normalize(" ".join(parts))

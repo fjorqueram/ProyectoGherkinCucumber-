@@ -172,12 +172,14 @@ class TestContextCollector:
     def test_collect_git_success(self, collector, mock_git_commits, mock_git_prs):
         """Test: Recolectar datos de Git exitosamente."""
         # Arrange
+        collector.git_client.search_prs_by_issue_key = Mock(
+            return_value=mock_git_prs
+        )
+        collector.git_client.search_branches_by_issue_key = Mock(return_value=[])
         collector.git_client.search_commits_by_issue_key = Mock(
             return_value=mock_git_commits
         )
-        collector.git_client.search_prs_by_commit_sha = Mock(
-            return_value=mock_git_prs
-        )
+        collector.git_client.get_pr_files = Mock(return_value=[])
         
         # Act
         result = collector._collect_git("DYF-4275", ("fjorqueram", "ProyectoGherkinCucumber"))
@@ -185,12 +187,111 @@ class TestContextCollector:
         # Assert
         assert result["owner"] == "fjorqueram"
         assert result["repo"] == "ProyectoGherkinCucumber"
+        assert result["status"] == "found"
         assert result["commit_count"] == 2
         assert result["pr_count"] == 1
         assert len(result["commits"]) == 2
         assert any("validation" in c["message"].lower() for c in result["commits"])
+        collector.git_client.search_prs_by_issue_key.assert_called_once()
         collector.git_client.search_commits_by_issue_key.assert_called_once()
-        collector.git_client.search_prs_by_commit_sha.assert_called_once()
+
+    def test_collect_git_finds_branch_and_changed_files_without_jira_link(self, collector):
+        """Test: Git encuentra evidencia por issue_key aunque Jira no tenga links."""
+        collector.git_client.search_prs_by_issue_key = Mock(return_value=[])
+        collector.git_client.search_branches_by_issue_key = Mock(return_value=[
+            {"name": "feature/DYF-4275-otros-archivos", "sha": "abc123", "url": ""}
+        ])
+        collector.git_client.search_commits_by_issue_key = Mock(return_value=[])
+        collector.git_client.compare_branch = Mock(return_value={
+            "commits": [
+                {
+                    "sha": "abc123",
+                    "message": "DYF-4275 agrega permisos de otros archivos",
+                    "url": "https://github.com/org/repo/commit/abc123",
+                }
+            ],
+            "files": [
+                {
+                    "filename": "src/antecedentes/OtrosArchivos.tsx",
+                    "status": "modified",
+                    "changes": 12,
+                }
+            ],
+        })
+
+        result = collector._collect_git("DYF-4275", ("org", "repo"))
+
+        assert result["status"] == "found"
+        assert result["branch_count"] == 1
+        assert result["commit_count"] == 1
+        assert result["changed_files"] == ["src/antecedentes/OtrosArchivos.tsx"]
+        assert "DYF-4275 agrega permisos" in result["diff_summary"]
+        assert "OtrosArchivos.tsx" in result["diff_summary"]
+
+    def test_collect_git_not_found_does_not_fail(self, collector):
+        """Test: si Git no encuentra evidencia retorna not_found sin romper."""
+        collector.git_client.search_prs_by_issue_key = Mock(return_value=[])
+        collector.git_client.search_branches_by_issue_key = Mock(return_value=[])
+        collector.git_client.search_commits_by_issue_key = Mock(return_value=[])
+
+        result = collector._collect_git("DYF-4275", ("org", "repo"))
+
+        assert result["status"] == "not_found"
+        assert result["commit_count"] == 0
+        assert result["pr_count"] == 0
+        assert result["changed_files"] == []
+
+    def test_collect_git_multiple_repos_keeps_valid_repo_when_one_fails(self, collector):
+        """Test: varios repos por issue_key no fallan completo si uno responde 422."""
+        def search_prs(owner, repo, issue_key):
+            if repo == "cme-cme":
+                raise PermanentError("Git Permanent: 422: repo invalid")
+            return [PullRequest(id="7", title="DYF-4275 front", url="https://github/pr/7", state="open")]
+
+        collector.git_client.search_prs_by_issue_key = Mock(side_effect=search_prs)
+        collector.git_client.search_branches_by_issue_key = Mock(return_value=[])
+        collector.git_client.search_commits_by_issue_key = Mock(return_value=[])
+        collector.git_client.get_pr_files = Mock(return_value=[
+            {"filename": "src/OtrosArchivos.tsx", "status": "modified", "changes": 20}
+        ])
+
+        result = collector._collect_git("DYF-4275", [("imedcl", "cme-cme"), ("imedcl", "cme-front")])
+
+        assert result["status"] == "found"
+        assert result["repo"] == "cme-cme,cme-front"
+        assert result["pr_count"] == 1
+        assert result["changed_files"] == ["src/OtrosArchivos.tsx"]
+        assert any(repo["status"] == "degraded" for repo in result["repositories"])
+        assert any("repo invalid" in error for error in result["errors"])
+
+    def test_collect_git_filters_prs_from_other_issue_keys(self, collector):
+        """Test: no usa PRs de otra tarjeta aunque el buscador los devuelva."""
+        collector.git_client.search_prs_by_issue_key = Mock(return_value=[
+            PullRequest(
+                id="52",
+                title="feat(DYF-4410): endpoint de antecedentes",
+                url="https://github.com/imedcl/cme-cme/pull/52",
+                state="closed",
+            ),
+            PullRequest(
+                id="173",
+                title="feat(cme): Otros archivos (DYF-4275)",
+                url="https://github.com/imedcl/cme-front/pull/173",
+                state="closed",
+            ),
+        ])
+        collector.git_client.search_branches_by_issue_key = Mock(return_value=[])
+        collector.git_client.search_commits_by_issue_key = Mock(return_value=[])
+        collector.git_client.get_pr_files = Mock(return_value=[
+            {"filename": "src/OtrosArchivos.tsx", "status": "modified", "changes": 20}
+        ])
+
+        result = collector._collect_git("DYF-4275", ("imedcl", "cme-front"))
+
+        assert result["status"] == "found"
+        assert result["pr_count"] == 1
+        assert result["prs"][0]["id"] == "173"
+        collector.git_client.get_pr_files.assert_called_once_with("imedcl", "cme-front", "173")
     
     def test_extract_test_scenarios_from_commits(self, collector):
         """Test: Extraer escenarios de prueba desde mensajes de commits."""
@@ -224,9 +325,11 @@ class TestContextCollector:
         collector.git_client.search_commits_by_issue_key = Mock(
             return_value=mock_git_commits
         )
-        collector.git_client.search_prs_by_commit_sha = Mock(
+        collector.git_client.search_prs_by_issue_key = Mock(
             return_value=mock_git_prs
         )
+        collector.git_client.search_branches_by_issue_key = Mock(return_value=[])
+        collector.git_client.get_pr_files = Mock(return_value=[])
         
         # Act
         context = collector.collect(
@@ -270,9 +373,11 @@ class TestContextCollector:
         collector.git_client.search_commits_by_issue_key = Mock(
             return_value=mock_git_commits
         )
-        collector.git_client.search_prs_by_commit_sha = Mock(
+        collector.git_client.search_prs_by_issue_key = Mock(
             return_value=mock_git_prs
         )
+        collector.git_client.search_branches_by_issue_key = Mock(return_value=[])
+        collector.git_client.get_pr_files = Mock(return_value=[])
         
         # Act
         context = collector.collect(

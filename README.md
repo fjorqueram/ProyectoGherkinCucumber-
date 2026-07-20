@@ -114,6 +114,9 @@ CONFLUENCE_TIMEOUT_SECONDS=30
 GIT_API_BASE_URL=https://api.github.com
 GIT_TOKEN=<github_pat>
 GIT_TIMEOUT_SECONDS=30
+GIT_OWNER=<org-o-usuario>
+GIT_REPO=<repositorio>
+GIT_BASE_BRANCH=develop
 
 # Xray (opcional)
 XRAY_BASE_URL=https://xray.cloud.getxray.app
@@ -174,6 +177,36 @@ GHERKIN_DOMAIN_RULES_FILE=C:\ruta\mi-domain-rules.json
 ```
 
 > Seguridad: no subir `.env` al repositorio.
+
+### Evidencia GitHub por issue key
+
+Al ejecutar:
+
+```bash
+gherkin generate DYF-4275 --use-llm
+```
+
+el valor `DYF-4275` se usa tambiÃ©n para buscar evidencia en GitHub aunque la tarjeta Jira no tenga PR, branch o commit vinculado.
+
+La bÃºsqueda intenta:
+
+- PRs que mencionen `DYF-4275`
+- ramas cuyo nombre contenga `DYF-4275`
+- commits que mencionen `DYF-4275`
+- archivos modificados de PRs encontrados
+- comparaciÃ³n de ramas encontradas contra `GIT_BASE_BRANCH`
+
+`GIT_REPO` acepta uno o varios repositorios separados por coma:
+
+```env
+GIT_OWNER=imedcl
+GIT_REPO=cme-cme,cme-front
+GIT_BASE_BRANCH=develop
+```
+
+Cada repositorio se busca por separado. Si uno no existe o el token no tiene permisos, se marca ese repo como degradado y se conserva la evidencia encontrada en los otros repositorios.
+
+Si GitHub no encuentra evidencia, la generaciÃ³n continÃºa con Jira/Confluence. Si GitHub responde con error de autenticaciÃ³n/permisos, se reporta como configuraciÃ³n a corregir.
 
 ---
 

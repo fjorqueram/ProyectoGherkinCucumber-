@@ -53,3 +53,26 @@ class TestOrchestrator:
         assert data["llm_provider"] == "openai"
         assert data["llm_model"] == "test-model"
         assert data["llm_scenarios_count"] == 3
+
+    def test_pipeline_state_serializes_collection_summary(self):
+        """Test que el estado guarda resumen auditable de recoleccion."""
+        result = PipelineResult(
+            issue_key="DYF-4275",
+            state=PipelineState.COLLECTED,
+            collection_summary={
+                "git": {
+                    "status": "found",
+                    "repo": "cme-cme,cme-front",
+                    "branch_count": 1,
+                    "pr_count": 1,
+                    "commit_count": 1,
+                    "changed_files": ["src/OtrosArchivos.tsx"],
+                }
+            },
+        )
+
+        data = result.to_dict()
+
+        assert data["collection_summary"]["git"]["status"] == "found"
+        assert data["collection_summary"]["git"]["repo"] == "cme-cme,cme-front"
+        assert data["collection_summary"]["git"]["changed_files"] == ["src/OtrosArchivos.tsx"]

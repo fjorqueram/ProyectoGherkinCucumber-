@@ -440,6 +440,55 @@ class TestAnalysisService:
         assert len(empty_state_paths) == 1
         assert empty_state_paths[0]["generated_by"] == "llm"
 
+    def test_use_llm_drops_generic_jira_fallback(self):
+        """Test: si IA aporta escenarios, no queda fallback local generico."""
+        context = {
+            "issue": {
+                "key": "DYF-4325",
+                "issue_key": "DYF-4325",
+                "summary": "[CME-RT] - Webhook recepción de tramitación de cuentas",
+                "description": "",
+                "acceptance_criteria": "Texto largo sin pasos Dado/Cuando/Entonces",
+                "links": [],
+                "raw": {},
+            },
+            "confluence": {},
+            "git": {},
+        }
+        llm_payload = {
+            "business_rules": [],
+            "preconditions": [],
+            "happy_paths": [
+                {
+                    "name": "Recepción exitosa de resultado para cuenta médica principal",
+                    "steps": [
+                        "Dado que el financiador procesó el envío de una cuenta médica principal",
+                        "Cuando el endpoint recibe un payload con tipo 'cuenta_medica' y exito es true",
+                        "Entonces el sistema pasa la cuenta a estado 3",
+                    ],
+                    "source": "jira",
+                    "source_id": "DYF-4325",
+                    "source_name": "Webhook recepción de tramitación de cuentas",
+                    "source_url": "",
+                }
+            ],
+            "error_scenarios": [],
+        }
+
+        with patch("ai_qa_gherkin.services.analysis_service.LLMClient") as client_cls:
+            client = Mock()
+            client.provider = "github_models"
+            client.model = "openai/gpt-4.1"
+            client.extract_business_rules.return_value = llm_payload
+            client_cls.return_value = client
+
+            result = AnalysisService(use_llm=True).analyze(context)
+
+        paths = result["raw"]["happy_paths"]
+        assert len(paths) == 1
+        assert paths[0]["generated_by"] == "llm"
+        assert not any("User initiates" in " ".join(path["steps"]) for path in paths)
+
     def test_use_llm_drops_local_confluence_when_llm_covers_confluence(self, mock_context_multisource):
         """Test: descarta escenarios heurísticos Confluence si IA cubre Confluence."""
         llm_payload = {

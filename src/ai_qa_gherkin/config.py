@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     git_api_base_url: str = Field(default="GIT_API_BASE_URL", alias="GIT_API_BASE_URL")
     git_token: str = Field(default="GIT_TOKEN", alias="GIT_TOKEN")
     git_timeout_seconds: int = Field(default=20, alias="GIT_TIMEOUT_SECONDS")
+    git_owner: str = Field(default="", alias="GIT_OWNER")
+    git_repo: str = Field(default="", alias="GIT_REPO")
+    git_base_branch: str = Field(default="develop", alias="GIT_BASE_BRANCH")
 
     # Xray
     xray_base_url: str = Field(default="https://xray.cloud.getxray.app", alias="XRAY_BASE_URL")

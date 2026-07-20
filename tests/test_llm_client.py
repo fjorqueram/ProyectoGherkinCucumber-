@@ -229,3 +229,31 @@ class TestLLMClient:
         message = str(exc.value)
         assert "github_models request failed: 403 models_access_denied" in message
         assert "raw denied" not in message
+
+    def test_prompt_includes_github_evidence(self, mock_openai, monkeypatch):
+        """Test: el prompt entrega evidencia GitHub a la IA."""
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        mock_openai.OpenAI.return_value = MagicMock()
+
+        client = LLMClient()
+        prompt = client._build_prompt({
+            "issue": {"issue_key": "DYF-4275", "summary": "Otros archivos"},
+            "confluence": {},
+            "git": {
+                "status": "found",
+                "search_key": "DYF-4275",
+                "owner": "org",
+                "repo": "repo",
+                "branches": [{"name": "feature/DYF-4275-otros-archivos"}],
+                "prs": [{"id": "42", "title": "DYF-4275 permisos", "state": "open", "url": "https://github/pr/42"}],
+                "commits": [{"sha": "abc123456", "message": "DYF-4275 agrega permisos"}],
+                "files": [{"filename": "src/OtrosArchivos.tsx", "status": "modified", "changes": 10}],
+                "diff_summary": "Archivos y permisos actualizados",
+            },
+        })
+
+        assert "EVIDENCIA GITHUB RELACIONADA" in prompt
+        assert "feature/DYF-4275-otros-archivos" in prompt
+        assert "src/OtrosArchivos.tsx" in prompt
+        assert 'source="git"' in prompt

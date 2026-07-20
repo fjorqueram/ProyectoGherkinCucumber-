@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from ai_qa_gherkin.config import settings
 from ai_qa_gherkin.logger import get_logger
 from ai_qa_gherkin.models.domain import AnalysisResult
 from ai_qa_gherkin.services.analysis_service import AnalysisService
@@ -45,6 +46,7 @@ class PipelineResult:
 
     # Datos del pipeline
     collected_context: dict[str, Any] = field(default_factory=dict)
+    collection_summary: dict[str, Any] = field(default_factory=dict)
     analysis_result: AnalysisResult | None = None
     feature_content: str | None = None
     validation_result: dict[str, Any] = field(default_factory=dict)
@@ -72,6 +74,7 @@ class PipelineResult:
             "traceability_path": self.traceability_path,
             "state_path": self.state_path,  # ← AGREGAR
             "context_hash": self.context_hash,
+            "collection_summary": self.collection_summary,
             "error": self.error,
             "duration_seconds": self.duration_seconds,
             "confidence": self.confidence,  # ← AGREGAR
@@ -188,10 +191,11 @@ class Orchestrator:
             log.info(f"Collecting context for {result.issue_key}...")
             
             # ✅ USAR LOS NUEVOS PARÁMETROS DE collector.collect()
+            git_repo = self._configured_git_repos()
             merged_context = self.collector.collect(
                 issue_key=result.issue_key,  # ← NUEVO PARÁMETRO
                 confluence_search="",
-                git_repo=("fjorqueram", "ProyectoGherkinCucumber")  # ← NUEVO PARÁMETRO (configurable)
+                git_repo=git_repo,
             )
             
             # Calcular hash para idempotencia
@@ -204,6 +208,7 @@ class Orchestrator:
                 return cached_result
             
             result.collected_context = merged_context
+            result.collection_summary = self._build_collection_summary(merged_context)
             result.context_hash = context_hash
             result.state = PipelineState.COLLECTED
 
@@ -404,6 +409,7 @@ class Orchestrator:
                     summary_path=state_data.get("summary_path"),
                     traceability_path=state_data.get("traceability_path"),
                     context_hash=context_hash,
+                    collection_summary=state_data.get("collection_summary", {}),
                     duration_seconds=state_data.get("duration_seconds", 0),
                     llm_requested=state_data.get("llm_requested", False),
                     llm_used=state_data.get("llm_used", False),
@@ -432,6 +438,74 @@ class Orchestrator:
         except Exception as e:
             log.warning(f"Failed to save state: {str(e)}")
 
+    def _build_collection_summary(self, context: dict[str, Any]) -> dict[str, Any]:
+        issue = context.get("issue", {}) or {}
+        confluence = context.get("confluence", {}) or {}
+        git = context.get("git", {}) or {}
+
+        return {
+            "issue": {
+                "key": issue.get("key") or issue.get("issue_key") or context.get("issue_key"),
+                "summary": issue.get("summary", ""),
+                "has_description": bool(issue.get("description")),
+                "acceptance_criteria_count": len(issue.get("acceptance_criteria") or []),
+            },
+            "confluence": {
+                "page_count": len(confluence.get("pages", []) or []),
+                "pages": [
+                    {
+                        "page_id": page.get("page_id") or page.get("id"),
+                        "title": page.get("title") or page.get("page_title"),
+                        "url": page.get("url") or page.get("page_url"),
+                        "source": page.get("source"),
+                    }
+                    for page in (confluence.get("pages", []) or [])[:10]
+                ],
+            },
+            "git": self._sanitize_git_summary(git),
+        }
+
+    @staticmethod
+    def _sanitize_git_summary(git: dict[str, Any]) -> dict[str, Any]:
+        if not git:
+            return {"status": "skipped"}
+
+        return {
+            "status": git.get("status", "unknown"),
+            "search_key": git.get("search_key", ""),
+            "owner": git.get("owner", ""),
+            "repo": git.get("repo", ""),
+            "base_branch": git.get("base_branch", ""),
+            "repositories": git.get("repositories", []),
+            "branch_count": git.get("branch_count", len(git.get("branches", []) or [])),
+            "branches": [
+                {"name": branch.get("name"), "sha": branch.get("sha")}
+                for branch in (git.get("branches", []) or [])[:10]
+            ],
+            "pr_count": git.get("pr_count", len(git.get("prs", []) or [])),
+            "prs": [
+                {
+                    "id": pr.get("id"),
+                    "title": pr.get("title"),
+                    "url": pr.get("url"),
+                    "state": pr.get("state"),
+                }
+                for pr in (git.get("prs", []) or [])[:10]
+            ],
+            "commit_count": git.get("commit_count", len(git.get("commits", []) or [])),
+            "commits": [
+                {
+                    "sha": commit.get("sha"),
+                    "message": str(commit.get("message", "")).splitlines()[0][:180],
+                    "url": commit.get("url"),
+                }
+                for commit in (git.get("commits", []) or [])[:10]
+            ],
+            "changed_files": (git.get("changed_files", []) or [])[:30],
+            "diff_summary": str(git.get("diff_summary", ""))[:1000],
+            "errors": (git.get("errors", []) or [])[:10],
+        }
+
     def _apply_llm_metadata(self, result: PipelineResult) -> None:
         metadata = self.analyzer.get_llm_metadata()
         result.llm_requested = bool(metadata.get("llm_requested"))
@@ -440,6 +514,14 @@ class Orchestrator:
         result.llm_model = metadata.get("llm_model")
         result.llm_error = metadata.get("llm_error")
         result.llm_scenarios_count = int(metadata.get("llm_scenarios_count") or 0)
+
+    @staticmethod
+    def _configured_git_repos() -> list[tuple[str, str]] | None:
+        if not settings.git_owner or not settings.git_repo:
+            return None
+
+        repos = [repo.strip() for repo in settings.git_repo.split(",") if repo.strip()]
+        return [(settings.git_owner, repo) for repo in repos] or None
 
     def get_summary(self, result: PipelineResult) -> str:
         """Retorna resumen textual del resultado."""

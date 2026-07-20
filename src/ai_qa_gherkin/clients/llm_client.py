@@ -82,6 +82,7 @@ class LLMClient:
         confluence_text = "\n\n".join(
             self._format_confluence_page_for_prompt(page) for page in confluence_pages[:5]
         )
+        git_text = self._format_git_for_prompt(merged_context.get("git", {}) or {})
 
         return f"""
 Analiza este requisito y genera activos para escenarios Gherkin en espanol.
@@ -96,15 +97,19 @@ REQUISITO JIRA
 DOCUMENTACION CONFLUENCE RELACIONADA
 {confluence_text or "(sin paginas Confluence encontradas)"}
 
+EVIDENCIA GITHUB RELACIONADA
+{git_text or "(sin evidencia GitHub encontrada)"}
+
 INSTRUCCIONES
-1. Usa Jira como fuente base y Confluence como evidencia complementaria.
-2. Genera escenarios adicionales cuando Confluence aporte reglas, flujos, validaciones o errores no cubiertos por Jira.
+1. Usa Jira como fuente base, Confluence como evidencia funcional y GitHub como evidencia tecnica complementaria.
+2. Genera escenarios adicionales cuando Confluence o GitHub aporten reglas, flujos, validaciones, permisos, errores, archivos modificados o comportamientos no cubiertos por Jira.
 3. No dupliques escenarios equivalentes.
 4. Usa pasos Gherkin observables en espanol: Dado/Cuando/Entonces/Y.
 5. No inventes reglas sin evidencia. Si algo es supuesto, colocalo en preconditions o assumptions.
 6. Para cada happy_path informa source, source_id, source_name y source_url si aplica.
 7. Si hay documentacion Confluence/FTU de la issue, genera entre 4 y 8 happy_paths con source="confluence" cubriendo flujos principales, estados vacios, permisos, acciones, validaciones, errores y bordes que esten descritos.
-8. Evita escenarios genericos tipo "Onboarding" si el FTU contiene reglas concretas; usa nombres de negocio especificos.
+8. Si hay evidencia GitHub, genera escenarios source="git" solo para comportamientos verificables derivados de PRs, commits, archivos modificados o diff_summary.
+9. Evita escenarios genericos tipo "Onboarding" si el FTU contiene reglas concretas; usa nombres de negocio especificos.
 
 Responde SOLO JSON valido, sin markdown:
 {{
@@ -307,6 +312,37 @@ Responde SOLO JSON valido, sin markdown:
             f"  URL: {url}\n"
             f"  Clean content:\n{excerpt}"
         )
+
+    def _format_git_for_prompt(self, git: dict[str, Any]) -> str:
+        if not git or git.get("status") == "not_found":
+            return ""
+
+        branches = ", ".join(
+            branch.get("name", "") for branch in git.get("branches", [])[:5]
+        )
+        prs = "\n".join(
+            f"- PR #{pr.get('id')}: {pr.get('title')} ({pr.get('state')}) {pr.get('url')}"
+            for pr in git.get("prs", [])[:5]
+        )
+        commits = "\n".join(
+            f"- {commit.get('sha', '')[:8]}: {str(commit.get('message', '')).splitlines()[0]}"
+            for commit in git.get("commits", [])[:8]
+        )
+        files = "\n".join(
+            f"- {item.get('filename')} ({item.get('status', 'modified')}, {item.get('changes', 0)} cambios)"
+            for item in git.get("files", [])[:12]
+        )
+
+        return "\n".join([
+            f"- Status: {git.get('status')}",
+            f"- Search key: {git.get('search_key')}",
+            f"- Repo: {git.get('owner')}/{git.get('repo')}",
+            f"- Branches: {branches or '(ninguna)'}",
+            f"- PRs:\n{prs or '(ninguno)'}",
+            f"- Commits:\n{commits or '(ninguno)'}",
+            f"- Changed files:\n{files or '(ninguno)'}",
+            f"- Diff summary: {git.get('diff_summary') or '(sin resumen)'}",
+        ])
 
     def _clean_confluence_content(self, content: str) -> str:
         content = html.unescape(content)

@@ -265,6 +265,72 @@ class TestGherkinService:
         assert result.is_valid is True
         assert result.confidence == 0.95
         assert not any(error["rule_id"] == "DUPLICATE_SCENARIO" for error in result.errors)
+
+    def test_generated_feature_dedupes_equivalent_outcomes_across_sources(self, gherkin_service):
+        """Test: elimina escenarios equivalentes aunque vengan redactados distinto."""
+        analysis = {
+            "issue_key": "DYF-4275",
+            "scope_summary": "Visualización de otros archivos",
+            "raw": {
+                "happy_paths": [
+                    {
+                        "name": "Se muestra el archivo en la tabla",
+                        "steps": [
+                            "Dado que el campo 'tamano' en ArchivoCuentaComplementarioDTO es nulo, cero o no viene",
+                            "Cuando se muestra el archivo en la tabla",
+                            "Entonces el tamaño se muestra como '—'",
+                        ],
+                        "source": "confluence",
+                        "generated_by": "llm",
+                        "traceability": {},
+                    },
+                    {
+                        "name": "El campo 'tamano' del archivo es nulo, cero o no viene",
+                        "steps": [
+                            "Dado que el campo 'tamano' del archivo es nulo, cero o no viene",
+                            "Cuando el usuario completa la acción solicitada para campo 'tamano' del archivo es nulo, cero o no viene",
+                            "Entonces el tamaño del archivo se muestra como '—' en la tabla",
+                        ],
+                        "source": "git",
+                        "generated_by": "llm",
+                        "traceability": {},
+                    },
+                ],
+                "error_scenarios": [],
+            },
+        }
+
+        generated = gherkin_service.generate_from_analysis(analysis)
+
+        assert generated.gherkin_text.count("Escenario:") == 1
+        assert "tamano" not in generated.gherkin_text
+
+    def test_generated_feature_coerces_steps_without_gherkin_keywords(self, gherkin_service):
+        """Test: pasos externos sin keyword no rompen la validacion Gherkin."""
+        analysis = {
+            "issue_key": "DYF-4325",
+            "scope_summary": "Webhook recepción de tramitación de cuentas",
+            "raw": {
+                "happy_paths": [
+                    {
+                        "name": "Happy path for webhook",
+                        "steps": ["User initiates", "System processes", "Result returned"],
+                        "source": "jira",
+                        "generated_by": "fallback",
+                        "traceability": {},
+                    }
+                ],
+                "error_scenarios": [],
+            },
+        }
+
+        generated = gherkin_service.generate_from_analysis(analysis)
+        result = GherkinValidator().validate(generated.gherkin_text)
+
+        assert "Dado que User initiates" in generated.gherkin_text
+        assert "Cuando System processes" in generated.gherkin_text
+        assert "Entonces Result returned" in generated.gherkin_text
+        assert result.is_valid is True
     
     def test_generated_feature_has_error_scenarios(self, gherkin_service, mock_analysis_result):
         """Test: El feature incluye escenarios de error."""
